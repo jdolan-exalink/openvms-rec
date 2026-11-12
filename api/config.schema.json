@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jdolan-exalink/openvms-rec/api/config.schema.json",
+  "title": "OpenVMS Recorder configuration",
+  "description": "YAML configuration of openvms-recorder. Semantic rules that JSON Schema cannot express (cleanup_target < cleanup_start < default_max, unique volume ids, manual placement needs assignments) are enforced by internal/config.Validate.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "listen": { "type": "string", "default": "127.0.0.1:8640", "description": "Overridable with OPENVMS_RECORDER_LISTEN." }
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": { "type": "string", "description": "SQLite index, logs, diagnostics. Must not be on a video volume. Overridable with OPENVMS_RECORDER_DATA_DIR." },
+        "secrets_file": { "type": "string", "description": "Camera credentials file (0600). Overridable with OPENVMS_RECORDER_SECRETS_FILE." }
+      }
+    },
+    "recording": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "const": "continuous_with_event_markers", "default": "continuous_with_event_markers" },
+        "default_stream": { "enum": ["main", "sub"], "default": "main" },
+        "dual_recording": { "type": "boolean", "default": false }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default_max_percent": { "$ref": "#/$defs/percent", "default": 90 },
+        "cleanup_start_percent": { "$ref": "#/$defs/percent", "default": 87 },
+        "cleanup_target_percent": { "$ref": "#/$defs/percent", "default": 84 },
+        "min_free_gb": { "type": "number", "minimum": 0, "default": 100 },
+        "placement": { "enum": ["balanced", "camera_affinity", "manual"], "default": "balanced" },
+        "pressure_policy": { "enum": ["overwrite_oldest_unprotected", "protect_minimum_retention"], "default": "overwrite_oldest_unprotected" },
+        "allow_system_volume": { "type": "boolean", "default": false },
+        "allow_network_volumes": { "type": "boolean", "default": false },
+        "volumes": { "type": "array", "items": { "$ref": "#/$defs/volume" } }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "main_days": { "type": "integer", "minimum": 0, "default": 7 },
+        "low_days": { "type": "integer", "minimum": 0, "default": 30 },
+        "min_days": { "type": "integer", "minimum": 0, "default": 1 },
+        "preserve_protected_events": { "type": "boolean", "default": true }
+      }
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "camera_sd_backfill": { "enum": ["when_supported", "recover_all", "recover_events_only", "index_remote_only", "disabled"], "default": "when_supported" },
+        "max_bandwidth_mbps": { "type": "number", "minimum": 0, "default": 20 }
+      }
+    }
+  },
+  "$defs": {
+    "percent": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+    "volume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "anyOf": [
+        { "required": ["path"] },
+        { "required": ["path_windows"] },
+        { "required": ["path_linux"] }
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
+        "path": { "type": "string" },
+        "path_windows": { "type": "string" },
+        "path_linux": { "type": "string" },
+        "enabled": { "type": "boolean", "default": true },
+        "max_percent": { "$ref": "#/$defs/percent" },
+        "quota_gb": { "type": "number", "minimum": 0 },
+        "min_free_gb": { "type": "number", "minimum": 0 },
+        "priority": { "type": "integer", "default": 0 },
+        "weight": { "type": "integer", "minimum": 1, "default": 1 },
+        "cameras": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

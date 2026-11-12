@@ -1,0 +1,7 @@
+/openvms-recorder
+/openvms-recorder.exe
+*.db
+*.db-wal
+*.db-shm
+/recorder.yaml
+/secrets.yaml

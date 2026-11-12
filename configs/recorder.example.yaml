@@ -1,0 +1,53 @@
+# OpenVMS Recorder — example configuration.
+# Schema: api/config.schema.json. Values below are the PRD initial defaults,
+# adjustable per site; they are not retention guarantees.
+
+server:
+  listen: 127.0.0.1:8640       # put TLS / a reverse proxy in front before exposing it
+
+data:
+  # SQLite index, logs, diagnostics. Keep it OFF the video volumes.
+  dir: /var/lib/openvms-recorder
+  # Camera credentials (mode 0600). Never put passwords in this file.
+  secrets_file: /etc/openvms-recorder/secrets.yaml
+
+recording:
+  mode: continuous_with_event_markers
+  default_stream: main
+  dual_recording: false
+
+storage:
+  default_max_percent: 90      # effective limit never exceeds this share of capacity
+  cleanup_start_percent: 87    # hysteresis high mark (scaled to each volume's limit)
+  cleanup_target_percent: 84   # hysteresis low mark
+  min_free_gb: 100             # reserve that always stays free
+  placement: balanced          # balanced | camera_affinity | manual
+  pressure_policy: overwrite_oldest_unprotected  # or protect_minimum_retention
+  allow_system_volume: false   # do not record on the OS disk unless explicitly allowed
+  allow_network_volumes: false # NFS/SMB are not suitable for continuous capture
+  volumes:
+    - id: cctv-d
+      path_windows: 'D:\OpenVMS\Recordings'
+      path_linux: /srv/cctv-d/recordings
+      max_percent: 90
+      enabled: true
+    - id: cctv-e
+      path_windows: 'E:\OpenVMS\Recordings'
+      path_linux: /srv/cctv-e/recordings
+      max_percent: 90
+      enabled: true
+    - id: cctv-f
+      path_windows: 'F:\OpenVMS\Recordings'
+      path_linux: /srv/cctv-f/recordings
+      max_percent: 80
+      enabled: true
+
+retention:
+  main_days: 7
+  low_days: 30                 # only used when dual_recording is true
+  min_days: 1                  # guaranteed under normal operation
+  preserve_protected_events: true
+
+recovery:
+  camera_sd_backfill: when_supported   # only acts on capabilities confirmed on real hardware
+  max_bandwidth_mbps: 20
