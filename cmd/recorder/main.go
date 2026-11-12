@@ -15,8 +15,8 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -24,7 +24,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/jdolan-exalink/openvms-rec/internal/api"
+	"github.com/jdolan-exalink/openvms-rec/internal/app"
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
 	"github.com/jdolan-exalink/openvms-rec/internal/db"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
@@ -119,31 +119,15 @@ func cmdServe(args []string) error {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	h, err := openDB(ctx, cfg)
+	if _, err := exec.LookPath(cfg.Recording.FFmpegPath); err != nil && len(cfg.Cameras) > 0 {
+		return fmt.Errorf("ffmpeg not found (%s): install it or set recording.ffmpeg_path", cfg.Recording.FFmpegPath)
+	}
+	a, err := app.New(ctx, cfg, volumes.OSProber{}, log, version)
 	if err != nil {
 		return err
 	}
-	defer h.Close()
-
-	srv := &http.Server{
-		Addr:              cfg.Server.Listen,
-		Handler:           (&api.Server{Cfg: cfg, DB: h, Prober: volumes.OSProber{}, Version: version, Log: log}).Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	errc := make(chan error, 1)
-	go func() { errc <- srv.ListenAndServe() }()
-	log.Info("recorder started", "listen", cfg.Server.Listen, "version", version, "volumes", len(cfg.Storage.Volumes))
-
-	select {
-	case err := <-errc:
-		return err
-	case <-ctx.Done():
-	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	log.Info("shutting down")
-	return srv.Shutdown(shutdownCtx)
+	defer a.Close()
+	return a.Run(ctx)
 }
 
 func cmdStorageCheck(args []string) error {

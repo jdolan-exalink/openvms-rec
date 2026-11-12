@@ -218,3 +218,121 @@ func one(res sql.Result, err error, format string, a ...any) error {
 func ms(t time.Time) int64 { return t.UnixMilli() }
 
 func fromMS(v int64) time.Time { return time.UnixMilli(v).UTC() }
+
+// MarkCorrupt flags a segment that could not be completed. Its bytes still
+// count toward the volume until retention removes it.
+func (s *Store) MarkCorrupt(ctx context.Context, id int64, size uint64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE segments SET status = 'corrupt', size_bytes = ?,
+		end_utc = COALESCE(end_utc, start_utc) WHERE id = ? AND status = 'writing'`, size, id)
+	return one(res, err, "mark corrupt %d", id)
+}
+
+// Writing returns segments left in 'writing' on a volume (crash recovery).
+func (s *Store) Writing(ctx context.Context, volumeID string) ([]Segment, error) {
+	return s.query(ctx, `WHERE volume_id = ? AND status = 'writing' ORDER BY id`, volumeID)
+}
+
+// Gap is an explicit hole in a camera's recording (ADR-003).
+type Gap struct {
+	ID               int64
+	CameraID         string
+	RepresentationID string
+	Start            time.Time
+	End              time.Time // zero while open
+	Reason           string
+}
+
+// OpenGap records the start of a recording hole.
+func (s *Store) OpenGap(ctx context.Context, cameraID, rep string, start time.Time, reason string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO recording_gaps(camera_id, representation_id, start_utc, reason)
+		VALUES (?, ?, ?, ?)`, cameraID, rep, ms(start), reason)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// CloseGap ends a hole. Closing an already closed gap is a no-op.
+func (s *Store) CloseGap(ctx context.Context, id int64, end time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE recording_gaps SET end_utc = ? WHERE id = ? AND end_utc IS NULL`, ms(end), id)
+	return err
+}
+
+// Gaps lists recording holes overlapping [from, to).
+func (s *Store) Gaps(ctx context.Context, cameraID, rep string, from, to time.Time) ([]Gap, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, camera_id, representation_id, start_utc, COALESCE(end_utc, 0), reason
+		FROM recording_gaps WHERE camera_id = ? AND representation_id = ? AND start_utc < ? AND COALESCE(end_utc, ?) > ?
+		ORDER BY start_utc, id`, cameraID, rep, ms(to), ms(to), ms(from))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Gap
+	for rows.Next() {
+		var g Gap
+		var st, en int64
+		if err := rows.Scan(&g.ID, &g.CameraID, &g.RepresentationID, &st, &en, &g.Reason); err != nil {
+			return nil, err
+		}
+		g.Start = fromMS(st)
+		if en > 0 {
+			g.End = fromMS(en)
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// LastSegmentEnd returns the end of a camera's newest finished segment, used
+// at startup to record the outage while the recorder was down.
+func (s *Store) LastSegmentEnd(ctx context.Context, cameraID, rep string) (time.Time, error) {
+	var v sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT MAX(end_utc) FROM segments WHERE camera_id = ? AND representation_id = ?
+		AND status IN ('final', 'corrupt', 'deleting', 'deleted')`, cameraID, rep).Scan(&v)
+	if err != nil || !v.Valid {
+		return time.Time{}, err
+	}
+	return fromMS(v.Int64), nil
+}
+
+// LoadAffinity reads the persisted camera→volume placement map.
+func (s *Store) LoadAffinity(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT camera_id, volume_id FROM placement_affinity`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := map[string]string{}
+	for rows.Next() {
+		var c, v string
+		if err := rows.Scan(&c, &v); err != nil {
+			return nil, err
+		}
+		m[c] = v
+	}
+	return m, rows.Err()
+}
+
+// SaveAffinity upserts the camera→volume map.
+func (s *Store) SaveAffinity(ctx context.Context, m map[string]string) error {
+	for c, v := range m {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO placement_affinity(camera_id, volume_id, updated_at) VALUES (?, ?, ?)
+			ON CONFLICT(camera_id) DO UPDATE SET volume_id = excluded.volume_id, updated_at = excluded.updated_at
+			WHERE placement_affinity.volume_id <> excluded.volume_id`, c, v, ms(time.Now())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CloseOpenGaps ends every open gap of a stream at t and returns how many
+// were closed. Used at startup: gaps left open by a previous run end when
+// recording resumes.
+func (s *Store) CloseOpenGaps(ctx context.Context, cameraID, rep string, t time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE recording_gaps SET end_utc = MAX(start_utc, ?)
+		WHERE camera_id = ? AND representation_id = ? AND end_utc IS NULL`, ms(t), cameraID, rep)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}

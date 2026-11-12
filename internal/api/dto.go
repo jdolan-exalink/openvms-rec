@@ -67,6 +67,29 @@ type SummaryDTO struct {
 	Placement           string         `json:"placement"`
 	PressurePolicy      string         `json:"pressure_policy"`
 	Warnings            []string       `json:"warnings"`
+	Alerts              []AlertDTO     `json:"alerts"`
+}
+
+// AlertDTO is a storage/retention alert.
+type AlertDTO struct {
+	Code     string `json:"code"`
+	CameraID string `json:"camera_id,omitempty"`
+	Message  string `json:"message"`
+}
+
+// StreamStatus is the ingest state of one camera stream.
+type StreamStatus struct {
+	CameraID       string    `json:"camera_id"`
+	Representation string    `json:"representation"`
+	Source         string    `json:"source"` // credentials redacted
+	State          string    `json:"state"`
+	LastError      string    `json:"last_error,omitempty"`
+	Reconnects     int64     `json:"reconnects"`
+	Segments       int64     `json:"segments"`
+	Bytes          int64     `json:"bytes"`
+	LastWrite      time.Time `json:"last_write,omitzero"`
+	BitrateKbps    float64   `json:"bitrate_kbps"`
+	Audio          string    `json:"audio"`
 }
 
 func toDTO(st volumes.Status, writable bool) VolumeDTO {

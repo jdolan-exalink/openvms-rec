@@ -15,6 +15,8 @@ recording:
   mode: continuous_with_event_markers
   default_stream: main
   dual_recording: false
+  segment_seconds: 60          # cut at the first keyframe after this
+  ffmpeg_path: ffmpeg          # remux only (-c copy); never re-encodes video
 
 storage:
   default_max_percent: 90      # effective limit never exceeds this share of capacity
@@ -51,3 +53,17 @@ retention:
 recovery:
   camera_sd_backfill: when_supported   # only acts on capabilities confirmed on real hardware
   max_bandwidth_mbps: 20
+
+# Cameras. URLs never carry credentials: they come from data.secrets_file:
+#   cameras:
+#     lab-door: {username: viewer, password: "..."}
+cameras:
+  - id: entrada
+    name: Entrada
+    main_url: rtsp://192.0.2.10:554/Streaming/Channels/101
+    sub_url: rtsp://192.0.2.10:554/Streaming/Channels/102
+    credentials_ref: entrada
+    transport: tcp             # tcp | udp
+    audio: auto                # auto | copy | aac | none (auto transcodes G.711 to AAC; video is always copied)
+    priority: 5                # higher = keeps footage longer under storage pressure
+    retention: {main_days: 14, min_days: 2}

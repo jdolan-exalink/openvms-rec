@@ -89,7 +89,7 @@ paths:
     get:
       tags: [cameras]
       operationId: listCameras
-      x-status: planned
+      x-status: implemented
       parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
       responses:
         "200": { description: Cameras, content: { application/json: { schema: { $ref: "#/components/schemas/CameraList" } } } }
@@ -125,7 +125,7 @@ paths:
     get:
       tags: [cameras]
       operationId: getCamera
-      x-status: planned
+      x-status: implemented
       responses:
         "200": { description: Camera, content: { application/json: { schema: { $ref: "#/components/schemas/Camera" } } } }
         "404": { $ref: "#/components/responses/Error" }
@@ -157,7 +157,7 @@ paths:
     get:
       tags: [recordings]
       operationId: listRecordings
-      x-status: planned
+      x-status: implemented
       description: |
         Timeline for a UTC range: intervals from `recorder_local` and
         `camera_sd`, plus explicit gaps. Intervals on a missing volume are
@@ -410,6 +410,22 @@ components:
         retention: { $ref: "#/components/schemas/CameraRetention" }
         volume_ids: { type: array, items: { type: string } }
         has_credentials: { type: boolean, description: Credentials are write-only and never returned. }
+        streams: { type: array, items: { $ref: "#/components/schemas/StreamStatus" } }
+    StreamStatus:
+      type: object
+      description: Live ingest state of one recorded stream (PRD M03 metrics).
+      properties:
+        camera_id: { type: string }
+        representation: { type: string, enum: [main, sub] }
+        source: { type: string, description: Stream URL with credentials and query removed. }
+        state: { type: string, enum: [starting, recording, backoff, stopped] }
+        last_error: { type: string }
+        reconnects: { type: integer }
+        segments: { type: integer }
+        bytes: { type: integer }
+        last_write: { type: string, format: date-time }
+        bitrate_kbps: { type: number }
+        audio: { type: string, enum: [copy, aac, none] }
     CameraCreate:
       type: object
       required: [name, host]
@@ -477,7 +493,8 @@ components:
         source: { type: string, enum: [recorder_local, camera_sd] }
         origin: { type: string, enum: [live_ingest, recovered_sd, remote_only] }
         available: { type: boolean, description: false when the holding volume is missing or the SD index was listed but replay is not accessible. }
-        volume_id: { type: string }
+        volume_ids: { type: array, items: { type: string }, description: Volumes holding the segments of this interval (ST-07). }
+        segments: { type: integer }
     Gap:
       type: object
       required: [start, reason]
@@ -590,7 +607,7 @@ components:
         cameras: { type: array, items: { type: string } }
     StorageSummary:
       type: object
-      required: [volumes, writable_volumes, by_state, effective_limit_bytes, headroom_bytes, recorder_bytes, placement, pressure_policy, warnings]
+      required: [volumes, writable_volumes, by_state, effective_limit_bytes, headroom_bytes, recorder_bytes, placement, pressure_policy, warnings, alerts]
       properties:
         volumes: { type: integer }
         writable_volumes: { type: integer }
@@ -601,6 +618,14 @@ components:
         placement: { type: string, enum: [balanced, camera_affinity, manual] }
         pressure_policy: { type: string, enum: [overwrite_oldest_unprotected, protect_minimum_retention] }
         warnings: { type: array, items: { type: string } }
+        alerts:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string, enum: [min_retention_violated, retention_pressure, protected_data_exceeds_target] }
+              camera_id: { type: string }
+              message: { type: string }
     StoragePolicy:
       type: object
       properties:

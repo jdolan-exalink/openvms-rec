@@ -28,6 +28,11 @@ type Server struct {
 	Version string
 	Log     *slog.Logger
 	Now     func() time.Time
+	// Storage, when set, provides live volume state (including ingest
+	// failures). Without it volumes are inspected on each request.
+	Storage *storage.Manager
+	// Streams returns ingest status per camera stream.
+	Streams func() []StreamStatus
 }
 
 // Handler returns the HTTP router.
@@ -39,6 +44,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/storage", s.storageSummary)
 	mux.HandleFunc("GET /api/v1/storage/volumes", s.listVolumes)
 	mux.HandleFunc("POST /api/v1/storage/volumes/{id}/validate", s.validateVolume)
+	mux.HandleFunc("GET /api/v1/cameras", s.listCameras)
+	mux.HandleFunc("GET /api/v1/cameras/{id}", s.getCamera)
+	mux.HandleFunc("GET /api/v1/cameras/{id}/recordings", s.recordings)
 	return mux
 }
 
@@ -73,7 +81,7 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 		"features": map[string]string{
 			"storage.multi_volume":    "implemented",
 			"storage.retention":       "implemented",
-			"recording.rtsp":          "planned",
+			"recording.rtsp":          "implemented",
 			"cameras.onvif_discovery": "planned",
 			"camera_sd.profile_g":     "planned",
 			"playback":                "planned",
@@ -83,6 +91,12 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) inspect(ctx context.Context) []volumes.Status {
+	if s.Storage != nil {
+		if sts := s.Storage.Statuses(); len(sts) > 0 {
+			return sts
+		}
+		return s.Storage.Refresh(ctx)
+	}
 	store := segments.New(s.DB)
 	in := volumes.Inspector{
 		Prober: s.Prober,
@@ -123,6 +137,12 @@ func (s *Server) storageSummary(w http.ResponseWriter, r *http.Request) {
 		sum.RecorderBytes += st.Usage.RecorderBytes
 	}
 	sum.Warnings = []string{volumes.WarnNoRedundancy}
+	sum.Alerts = []AlertDTO{}
+	if s.Storage != nil {
+		for _, a := range s.Storage.Alerts() {
+			sum.Alerts = append(sum.Alerts, AlertDTO{Code: a.Code, CameraID: a.CameraID, Message: a.Message})
+		}
+	}
 	writeJSON(w, http.StatusOK, sum)
 }
 
@@ -148,7 +168,12 @@ func (s *Server) validateVolume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	probe := health.Probe(spec.Root)
-	sts := s.inspect(r.Context())
+	var sts []volumes.Status
+	if s.Storage != nil {
+		sts = s.Storage.Refresh(r.Context())
+	} else {
+		sts = s.inspect(r.Context())
+	}
 	cands := storage.Candidates(sts, s.Cfg.Storage)
 	for i, st := range sts {
 		if st.Spec.ID != id {

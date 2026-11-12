@@ -10,83 +10,311 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "listen": { "type": "string", "default": "127.0.0.1:8640", "description": "Overridable with OPENVMS_RECORDER_LISTEN." }
+        "listen": {
+          "type": "string",
+          "default": "127.0.0.1:8640",
+          "description": "Overridable with OPENVMS_RECORDER_LISTEN."
+        }
       }
     },
     "data": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "dir": { "type": "string", "description": "SQLite index, logs, diagnostics. Must not be on a video volume. Overridable with OPENVMS_RECORDER_DATA_DIR." },
-        "secrets_file": { "type": "string", "description": "Camera credentials file (0600). Overridable with OPENVMS_RECORDER_SECRETS_FILE." }
+        "dir": {
+          "type": "string",
+          "description": "SQLite index, logs, diagnostics. Must not be on a video volume. Overridable with OPENVMS_RECORDER_DATA_DIR."
+        },
+        "secrets_file": {
+          "type": "string",
+          "description": "Camera credentials file (0600). Overridable with OPENVMS_RECORDER_SECRETS_FILE."
+        }
       }
     },
     "recording": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "mode": { "const": "continuous_with_event_markers", "default": "continuous_with_event_markers" },
-        "default_stream": { "enum": ["main", "sub"], "default": "main" },
-        "dual_recording": { "type": "boolean", "default": false }
+        "mode": {
+          "const": "continuous_with_event_markers",
+          "default": "continuous_with_event_markers"
+        },
+        "default_stream": {
+          "enum": [
+            "main",
+            "sub"
+          ],
+          "default": "main"
+        },
+        "dual_recording": {
+          "type": "boolean",
+          "default": false
+        },
+        "segment_seconds": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 600,
+          "default": 60
+        },
+        "ffmpeg_path": {
+          "type": "string",
+          "default": "ffmpeg"
+        }
       }
     },
     "storage": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "default_max_percent": { "$ref": "#/$defs/percent", "default": 90 },
-        "cleanup_start_percent": { "$ref": "#/$defs/percent", "default": 87 },
-        "cleanup_target_percent": { "$ref": "#/$defs/percent", "default": 84 },
-        "min_free_gb": { "type": "number", "minimum": 0, "default": 100 },
-        "placement": { "enum": ["balanced", "camera_affinity", "manual"], "default": "balanced" },
-        "pressure_policy": { "enum": ["overwrite_oldest_unprotected", "protect_minimum_retention"], "default": "overwrite_oldest_unprotected" },
-        "allow_system_volume": { "type": "boolean", "default": false },
-        "allow_network_volumes": { "type": "boolean", "default": false },
-        "volumes": { "type": "array", "items": { "$ref": "#/$defs/volume" } }
+        "default_max_percent": {
+          "$ref": "#/$defs/percent",
+          "default": 90
+        },
+        "cleanup_start_percent": {
+          "$ref": "#/$defs/percent",
+          "default": 87
+        },
+        "cleanup_target_percent": {
+          "$ref": "#/$defs/percent",
+          "default": 84
+        },
+        "min_free_gb": {
+          "type": "number",
+          "minimum": 0,
+          "default": 100
+        },
+        "placement": {
+          "enum": [
+            "balanced",
+            "camera_affinity",
+            "manual"
+          ],
+          "default": "balanced"
+        },
+        "pressure_policy": {
+          "enum": [
+            "overwrite_oldest_unprotected",
+            "protect_minimum_retention"
+          ],
+          "default": "overwrite_oldest_unprotected"
+        },
+        "allow_system_volume": {
+          "type": "boolean",
+          "default": false
+        },
+        "allow_network_volumes": {
+          "type": "boolean",
+          "default": false
+        },
+        "volumes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/volume"
+          }
+        }
       }
     },
     "retention": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "main_days": { "type": "integer", "minimum": 0, "default": 7 },
-        "low_days": { "type": "integer", "minimum": 0, "default": 30 },
-        "min_days": { "type": "integer", "minimum": 0, "default": 1 },
-        "preserve_protected_events": { "type": "boolean", "default": true }
+        "main_days": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 7
+        },
+        "low_days": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30
+        },
+        "min_days": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1
+        },
+        "preserve_protected_events": {
+          "type": "boolean",
+          "default": true
+        }
       }
     },
     "recovery": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "camera_sd_backfill": { "enum": ["when_supported", "recover_all", "recover_events_only", "index_remote_only", "disabled"], "default": "when_supported" },
-        "max_bandwidth_mbps": { "type": "number", "minimum": 0, "default": 20 }
+        "camera_sd_backfill": {
+          "enum": [
+            "when_supported",
+            "recover_all",
+            "recover_events_only",
+            "index_remote_only",
+            "disabled"
+          ],
+          "default": "when_supported"
+        },
+        "max_bandwidth_mbps": {
+          "type": "number",
+          "minimum": 0,
+          "default": 20
+        }
+      }
+    },
+    "cameras": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/camera"
       }
     }
   },
   "$defs": {
-    "percent": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+    "percent": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 100
+    },
     "volume": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id"],
+      "required": [
+        "id"
+      ],
       "anyOf": [
-        { "required": ["path"] },
-        { "required": ["path_windows"] },
-        { "required": ["path_linux"] }
+        {
+          "required": [
+            "path"
+          ]
+        },
+        {
+          "required": [
+            "path_windows"
+          ]
+        },
+        {
+          "required": [
+            "path_linux"
+          ]
+        }
       ],
       "properties": {
-        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
-        "path": { "type": "string" },
-        "path_windows": { "type": "string" },
-        "path_linux": { "type": "string" },
-        "enabled": { "type": "boolean", "default": true },
-        "max_percent": { "$ref": "#/$defs/percent" },
-        "quota_gb": { "type": "number", "minimum": 0 },
-        "min_free_gb": { "type": "number", "minimum": 0 },
-        "priority": { "type": "integer", "default": 0 },
-        "weight": { "type": "integer", "minimum": 1, "default": 1 },
-        "cameras": { "type": "array", "items": { "type": "string" } }
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+        },
+        "path": {
+          "type": "string"
+        },
+        "path_windows": {
+          "type": "string"
+        },
+        "path_linux": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_percent": {
+          "$ref": "#/$defs/percent"
+        },
+        "quota_gb": {
+          "type": "number",
+          "minimum": 0
+        },
+        "min_free_gb": {
+          "type": "number",
+          "minimum": 0
+        },
+        "priority": {
+          "type": "integer",
+          "default": 0
+        },
+        "weight": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "cameras": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "main_url"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+        },
+        "name": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "main_url": {
+          "type": "string",
+          "pattern": "^rtsps?://[^@/]+(/.*)?$",
+          "description": "RTSP URL without credentials."
+        },
+        "sub_url": {
+          "type": "string",
+          "pattern": "^rtsps?://[^@/]+(/.*)?$"
+        },
+        "credentials_ref": {
+          "type": "string",
+          "description": "Key under cameras: in the secrets file."
+        },
+        "transport": {
+          "enum": [
+            "tcp",
+            "udp"
+          ],
+          "default": "tcp"
+        },
+        "audio": {
+          "enum": [
+            "auto",
+            "copy",
+            "aac",
+            "none"
+          ],
+          "default": "auto"
+        },
+        "priority": {
+          "type": "integer"
+        },
+        "dual_recording": {
+          "type": "boolean",
+          "default": false
+        },
+        "retention": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "main_days": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sub_days": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "min_days": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
       }
     }
   }

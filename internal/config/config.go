@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"regexp"
 	"runtime"
@@ -48,7 +49,34 @@ type Config struct {
 	Storage   Storage   `yaml:"storage"`
 	Retention Retention `yaml:"retention"`
 	Recovery  Recovery  `yaml:"recovery"`
+	Cameras   []Camera  `yaml:"cameras"`
 }
+
+// Camera is a recorded camera. URLs must not contain credentials: they live
+// in the secrets file under credentials_ref.
+type Camera struct {
+	ID             string           `yaml:"id"`
+	Name           string           `yaml:"name"`
+	Enabled        *bool            `yaml:"enabled"`
+	MainURL        string           `yaml:"main_url"`
+	SubURL         string           `yaml:"sub_url"`
+	CredentialsRef string           `yaml:"credentials_ref"`
+	Transport      string           `yaml:"transport"`
+	Audio          string           `yaml:"audio"`
+	Priority       int              `yaml:"priority"`
+	DualRecording  bool             `yaml:"dual_recording"`
+	Retention      *CameraRetention `yaml:"retention"`
+}
+
+// CameraRetention overrides global retention days for one camera.
+type CameraRetention struct {
+	MainDays *int `yaml:"main_days"`
+	SubDays  *int `yaml:"sub_days"`
+	MinDays  *int `yaml:"min_days"`
+}
+
+// IsEnabled defaults to true.
+func (c Camera) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
 
 type Server struct {
 	Listen string `yaml:"listen"`
@@ -63,9 +91,11 @@ type Data struct {
 }
 
 type Recording struct {
-	Mode          string `yaml:"mode"`
-	DefaultStream string `yaml:"default_stream"`
-	DualRecording bool   `yaml:"dual_recording"`
+	Mode           string `yaml:"mode"`
+	DefaultStream  string `yaml:"default_stream"`
+	DualRecording  bool   `yaml:"dual_recording"`
+	SegmentSeconds int    `yaml:"segment_seconds"`
+	FFmpegPath     string `yaml:"ffmpeg_path"`
 }
 
 type Storage struct {
@@ -116,8 +146,10 @@ func Default() Config {
 		Server: Server{Listen: "127.0.0.1:8640"},
 		Data:   Data{Dir: defaultDataDir()},
 		Recording: Recording{
-			Mode:          ModeContinuousWithEventMarkers,
-			DefaultStream: "main",
+			Mode:           ModeContinuousWithEventMarkers,
+			DefaultStream:  "main",
+			SegmentSeconds: 60,
+			FFmpegPath:     "ffmpeg",
 		},
 		Storage: Storage{
 			DefaultMaxPercent:    90,
@@ -314,6 +346,47 @@ func (c Config) Validate() error {
 	case "when_supported", "recover_all", "recover_events_only", "index_remote_only", "disabled":
 	default:
 		add("recovery.camera_sd_backfill: %q not recognised", c.Recovery.CameraSDBackfill)
+	}
+	if c.Recording.SegmentSeconds < 2 || c.Recording.SegmentSeconds > 600 {
+		add("recording.segment_seconds: %d must be in [2, 600]", c.Recording.SegmentSeconds)
+	}
+	camSeen := map[string]bool{}
+	for i, cam := range c.Cameras {
+		where := fmt.Sprintf("cameras[%d]", i)
+		if !volumeID.MatchString(cam.ID) {
+			add("%s.id: %q must match %s", where, cam.ID, volumeID)
+		} else if camSeen[cam.ID] {
+			add("%s.id: duplicate %q", where, cam.ID)
+		}
+		camSeen[cam.ID] = true
+		if cam.MainURL == "" {
+			add("%s.main_url: required", where)
+		}
+		for _, raw := range []string{cam.MainURL, cam.SubURL} {
+			if raw == "" {
+				continue
+			}
+			u, err := url.Parse(raw)
+			switch {
+			case err != nil:
+				add("%s: invalid url", where)
+			case u.Scheme != "rtsp" && u.Scheme != "rtsps":
+				add("%s: url scheme must be rtsp or rtsps", where)
+			case u.User != nil:
+				add("%s: url must not contain credentials; use credentials_ref and the secrets file", where)
+			}
+		}
+		if cam.Transport != "" && cam.Transport != "tcp" && cam.Transport != "udp" {
+			add("%s.transport: must be tcp or udp", where)
+		}
+		switch cam.Audio {
+		case "", "auto", "copy", "aac", "none":
+		default:
+			add("%s.audio: must be auto, copy, aac or none", where)
+		}
+		if (cam.DualRecording || c.Recording.DualRecording) && cam.SubURL == "" {
+			add("%s: dual_recording needs sub_url", where)
+		}
 	}
 	if c.Data.Dir == "" {
 		add("data.dir: required")
