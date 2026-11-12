@@ -38,3 +38,28 @@ func TestOpenMigratesIdempotently(t *testing.T) {
 		t.Error("foreign keys disabled")
 	}
 }
+
+func TestBackup(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	d, err := Open(ctx, filepath.Join(dir, "a.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	d.Exec(`INSERT INTO audit_log(at, actor, action) VALUES (1, 'x', 'y')`)
+	dst := filepath.Join(dir, "backup.db")
+	if err := Backup(ctx, d, dst); err != nil {
+		t.Fatal(err)
+	}
+	b, err := Open(ctx, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	var n int
+	b.QueryRow(`SELECT COUNT(*) FROM audit_log`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("rows=%d", n)
+	}
+}

@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenVMS Recorder</title>
+<style>
+:root{--bg:#f5f6f8;--panel:#fff;--text:#1b1f24;--muted:#5d6670;--line:#dfe3e8;--accent:#1f6feb;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;--rec:#2da44e;--gap:#cf222e;--na:#8c959f}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--panel:#161b22;--text:#e6edf3;--muted:#8d96a0;--line:#30363d;--accent:#4493f8;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--rec:#3fb950;--gap:#f85149;--na:#6e7681}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text)}
+header{display:flex;align-items:center;gap:16px;padding:10px 20px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+header h1{font-size:16px;margin:0;font-weight:600}nav{display:flex;gap:4px;flex-wrap:wrap}
+nav button{background:none;border:0;color:var(--muted);padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
+nav button.on{background:var(--bg);color:var(--text);font-weight:600}
+#who{margin-left:auto;color:var(--muted);font-size:12px}
+main{max-width:1200px;margin:0 auto;padding:20px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px}
+.card h2{font-size:14px;margin:0 0 12px;font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.stat .v{font-size:22px;font-weight:600}.stat .k{color:var(--muted);font-size:12px}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:500;font-size:12px}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;border:1px solid currentColor}
+.s-healthy,.s-recording{color:var(--ok)}.s-full,.s-draining,.s-backoff,.s-starting,.s-uninitialized{color:var(--warn)}.s-degraded,.s-missing,.s-stopped{color:var(--bad)}.s-disabled{color:var(--muted)}
+.bar{position:relative;height:12px;background:var(--bg);border:1px solid var(--line);border-radius:6px;overflow:hidden;min-width:160px}
+.bar i{position:absolute;top:0;bottom:0;left:0;background:var(--accent)}.bar b{position:absolute;top:-2px;bottom:-2px;width:2px}
+.muted{color:var(--muted)}.small{font-size:12px}.warn{color:var(--warn)}.bad{color:var(--bad)}
+.note{border-left:3px solid var(--warn);padding:8px 12px;background:var(--bg);margin:0 0 12px}
+input,select,button.b{font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)}
+button.b{cursor:pointer}button.b.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+svg.tl{width:100%;height:56px;cursor:crosshair;display:block}
+video{width:100%;max-height:60vh;background:#000;border-radius:6px}
+#login{max-width:420px;margin:12vh auto}code{font-size:12px;word-break:break-all}
+.legend span{margin-right:14px}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+</style>
+</head>
+<body>
+<header>
+  <h1>OpenVMS Recorder</h1>
+  <nav id="nav">
+    <button data-v="dash" class="on">Panel</button>
+    <button data-v="cams">Cámaras</button>
+    <button data-v="rec">Grabaciones</button>
+    <button data-v="storage">Almacenamiento</button>
+  </nav>
+  <span id="who"></span>
+</header>
+<main id="main"></main>
+
+<template id="t-login">
+  <div class="card" id="login">
+    <h2>Acceso</h2>
+    <p class="muted small">Esta instancia exige una API key. Creala en el servidor con <code>openvms-recorder apikey create NOMBRE</code>. Se guarda solo en esta pestaña.</p>
+    <div class="row"><input id="key" type="password" placeholder="ovr_…" style="flex:1" autocomplete="off"><button class="b primary" id="go">Entrar</button></div>
+    <p class="bad small" id="lerr"></p>
+  </div>
+</template>
+
+<script>
+"use strict";
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const GB = 1e9, fmtGB = b => (b / GB).toFixed(b < 10 * GB ? 2 : 1) + " GB";
+const fmtT = t => t ? new Date(t).toLocaleString() : "—";
+const STATE = {healthy:"sano", full:"lleno", degraded:"degradado", missing:"ausente", disabled:"deshabilitado", draining:"drenando", uninitialized:"sin inicializar", recording:"grabando", backoff:"reconectando", starting:"conectando", stopped:"detenido"};
+const WARN = {system_volume:"disco del sistema", network_volume:"volumen de red", removable_volume:"extraíble", no_redundancy_assumed:"sin redundancia", identity_changed:"identidad cambiada"};
+const pill = s => `<span class="pill s-${esc(s)}">${esc(STATE[s] || s)}</span>`;
+
+let key = sessionStorage.getItem("ovr_key") || "";
+async function api(path, opts = {}) {
+  const h = Object.assign({}, opts.headers || {});
+  if (key) h["X-API-Key"] = key;
+  const r = await fetch(path, Object.assign({}, opts, {headers: h}));
+  if (r.status === 401) { showLogin(); throw new Error("unauthorized"); }
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).error.message } catch {} throw new Error(m); }
+  return opts.raw ? r : r.json();
+}
+
+function showLogin(msg) {
+  $("#main").replaceChildren($("#t-login").content.cloneNode(true));
+  if (msg) $("#lerr").textContent = msg;
+  $("#go").onclick = async () => {
+    key = $("#key").value.trim(); sessionStorage.setItem("ovr_key", key);
+    try { await api("/api/v1/system/capabilities"); show(view); } catch (e) { $("#lerr").textContent = "API key inválida"; }
+  };
+}
+
+let view = "dash", timer;
+document.querySelectorAll("#nav button").forEach(b => b.onclick = () => show(b.dataset.v));
+function show(v) {
+  view = v; clearInterval(timer);
+  document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
+  ({dash, cams, rec, storage})[v]().catch(e => { if (e.message !== "unauthorized") $("#main").innerHTML = `<div class="card bad">${esc(e.message)}</div>`; });
+}
+
+async function dash() {
+  const [sum, cams, caps] = await Promise.all([api("/api/v1/storage"), api("/api/v1/cameras"), api("/api/v1/system/capabilities")]);
+  $("#who").textContent = `v${caps.version} · ${caps.os}/${caps.arch}`;
+  const streams = cams.items.flatMap(c => c.streams);
+  const rec = streams.filter(s => s.state === "recording").length;
+  const kbps = streams.reduce((a, s) => a + (s.bitrate_kbps || 0), 0);
+  const gbDay = kbps / 1000 * 10.8;
+  const days = gbDay > 0 ? (sum.effective_limit_bytes / GB / gbDay) : null;
+  $("#main").innerHTML = `
+  ${sum.alerts.length ? `<div class="card"><h2 class="bad">Alertas</h2>${sum.alerts.map(a => `<div>${esc(a.code)} ${a.camera_id ? "· " + esc(a.camera_id) : ""} — ${esc(a.message)}</div>`).join("")}</div>` : ""}
+  <div class="card"><div class="grid">
+    <div class="stat"><div class="v">${rec}/${streams.length}</div><div class="k">streams grabando</div></div>
+    <div class="stat"><div class="v">${(kbps / 1000).toFixed(1)} Mbps</div><div class="k">bitrate total (≈${gbDay.toFixed(1)} GB/día)</div></div>
+    <div class="stat"><div class="v">${sum.writable_volumes}/${sum.volumes}</div><div class="k">volúmenes escribibles</div></div>
+    <div class="stat"><div class="v">${fmtGB(sum.recorder_bytes)}</div><div class="k">grabado de ${fmtGB(sum.effective_limit_bytes)} utilizables</div></div>
+    <div class="stat"><div class="v">${days ? days.toFixed(1) + " d" : "—"}</div><div class="k">retención estimada al bitrate actual</div></div>
+  </div></div>
+  <div class="card"><h2>Cámaras</h2>${camTable(cams.items)}</div>`;
+  timer = setInterval(() => view === "dash" && dash().catch(() => {}), 10000);
+}
+
+function camTable(items) {
+  if (!items.length) return `<p class="muted">No hay cámaras configuradas (sección <code>cameras:</code> del YAML).</p>`;
+  return `<table><tr><th>Cámara</th><th>Stream</th><th>Estado</th><th>Bitrate</th><th>Segmentos</th><th>Reconexiones</th><th>Última escritura</th><th>Audio</th></tr>
+  ${items.flatMap(c => (c.streams.length ? c.streams : [{}]).map(s => `<tr>
+    <td><b>${esc(c.name || c.id)}</b><div class="muted small">${esc(c.id)}</div></td>
+    <td>${esc(s.representation || "—")}<div class="muted small">${esc(s.source || "")}</div></td>
+    <td>${s.state ? pill(s.state) : pill(c.enabled ? "stopped" : "disabled")}${s.last_error ? `<div class="bad small">${esc(s.last_error)}</div>` : ""}</td>
+    <td>${s.bitrate_kbps ? (s.bitrate_kbps / 1000).toFixed(2) + " Mbps" : "—"}</td>
+    <td>${s.segments ?? "—"}</td><td>${s.reconnects ?? "—"}</td><td class="small">${fmtT(s.last_write)}</td><td>${esc(s.audio || "—")}</td></tr>`)).join("")}</table>`;
+}
+
+async function cams() {
+  const c = await api("/api/v1/cameras");
+  $("#main").innerHTML = `<div class="card"><h2>Cámaras</h2>
+  <p class="muted small">Las capacidades de cada cámara (ONVIF, Profile G, microSD, analíticas) se informan solo con evidencia de pruebas reales; ninguna está confirmada todavía.</p>${camTable(c.items)}</div>`;
+  timer = setInterval(() => view === "cams" && cams().catch(() => {}), 10000);
+}
+
+async function storage() {
+  const [sum, v] = await Promise.all([api("/api/v1/storage"), api("/api/v1/storage/volumes")]);
+  $("#main").innerHTML = `
+  <div class="note"><b>Varios discos no son redundancia.</b> Si un disco independiente falla, se pierden sus grabaciones. Para tolerancia a fallas use RAID, Storage Spaces o ZFS por debajo del Recorder.</div>
+  <div class="card"><h2>Volúmenes · colocación <code>${esc(sum.placement)}</code> · presión <code>${esc(sum.pressure_policy)}</code></h2>
+  <table><tr><th>Volumen</th><th>Estado</th><th>Ocupación del Recorder</th><th>Capacidad</th><th>Límite efectivo</th><th>Cuota</th><th>Avisos</th><th></th></tr>
+  ${v.items.map(x => {
+    const cap = x.capacity_bytes || 1, pct = b => (100 * b / cap).toFixed(2);
+    return `<tr>
+    <td><b>${esc(x.id)}</b><div class="muted small">${esc(x.root_path)}</div><div class="muted small">${esc(x.fs_type)} · ${esc(x.stable_id)}</div></td>
+    <td>${pill(x.state)}${x.state_reason ? `<div class="small muted">${esc(x.state_reason)}</div>` : ""}</td>
+    <td><div class="bar" title="azul: grabaciones; amarillo: inicio de limpieza; rojo: límite efectivo">
+      <i style="width:${pct(x.recorder_bytes)}%"></i>
+      <b style="left:${pct(x.limits.cleanup_start_bytes)}%;background:var(--warn)"></b>
+      <b style="left:${pct(x.limits.effective_bytes)}%;background:var(--bad)"></b></div>
+      <div class="small muted">${fmtGB(x.recorder_bytes)} · libre ${fmtGB(x.free_bytes)}</div></td>
+    <td>${fmtGB(x.capacity_bytes)}</td>
+    <td>${fmtGB(x.limits.effective_bytes)}<div class="small muted">por ${esc(x.limits.binding_constraint)}</div></td>
+    <td>${x.quota.max_percent}%<div class="small muted">reserva ${fmtGB(x.quota.min_free_bytes)}</div></td>
+    <td class="small">${x.warnings.map(w => `<div class="${w === "no_redundancy_assumed" ? "muted" : "warn"}">${esc(WARN[w] || w)}</div>`).join("")}</td>
+    <td>${x.state === "uninitialized" ? `<button class="b" data-init="${esc(x.id)}">Inicializar</button>` : ""}</td></tr>`;
+  }).join("")}</table>
+  <p class="muted small">Inicializar solo funciona sobre una carpeta vacía: escribe un marcador y prueba escritura. Nunca se formatea ni repara un disco.</p></div>`;
+  document.querySelectorAll("[data-init]").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { await api(`/api/v1/storage/volumes/${encodeURIComponent(b.dataset.init)}/validate`, {method: "POST"}); storage(); }
+    catch (e) { alert(e.message); b.disabled = false; }
+  });
+}
+
+const toLocalInput = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+async function rec() {
+  const c = await api("/api/v1/cameras");
+  if (!c.items.length) { $("#main").innerHTML = `<div class="card muted">No hay cámaras configuradas.</div>`; return; }
+  const now = new Date(), from = new Date(now - 24 * 3600e3);
+  $("#main").innerHTML = `<div class="card">
+    <div class="row">
+      <select id="cam">${c.items.map(x => `<option value="${esc(x.id)}">${esc(x.name || x.id)}</option>`).join("")}</select>
+      <label class="small muted">desde</label><input type="datetime-local" id="from" value="${toLocalInput(from)}">
+      <label class="small muted">hasta</label><input type="datetime-local" id="to" value="${toLocalInput(now)}">
+      <button class="b" id="load">Ver</button>
+    </div>
+    <div class="legend small muted"><span><i style="background:var(--rec)"></i>grabado</span><span><i style="background:var(--na)"></i>en volumen no disponible</span><span><i style="background:var(--gap)"></i>hueco registrado</span><span>Clic en la barra para reproducir desde ese momento.</span></div>
+    <svg class="tl" id="tl"></svg><div class="row small muted" id="tlx"></div>
+  </div>
+  <div class="card"><h2>Reproducción</h2><video id="vid" controls playsinline></video><p class="small muted" id="pinfo">Elegí un momento en la línea de tiempo.</p></div>
+  <div class="card"><h2>Exportar evidencia</h2>
+    <div class="row"><label class="small muted">desde</label><input type="datetime-local" id="ef"><label class="small muted">hasta</label><input type="datetime-local" id="et"><button class="b primary" id="exp">Exportar MP4</button></div>
+    <p class="small muted">Se remuxa sin recodificar. El inicio se ajusta al keyframe anterior. El ZIP incluye manifest.json con SHA-256 del video y de cada segmento de origen verificado.</p>
+    <div id="estat" class="small"></div></div>`;
+  $("#load").onclick = loadTL; $("#exp").onclick = doExport;
+  await loadTL();
+}
+
+let tlRange;
+async function loadTL() {
+  const cam = $("#cam").value, f = new Date($("#from").value), t = new Date($("#to").value);
+  tlRange = {cam, f, t};
+  const d = await api(`/api/v1/cameras/${encodeURIComponent(cam)}/recordings?from=${f.toISOString()}&to=${t.toISOString()}`);
+  const W = 1000, span = t - f, x = v => Math.max(0, Math.min(W, (new Date(v) - f) / span * W));
+  const parts = [`<rect x="0" y="8" width="${W}" height="32" fill="var(--bg)" stroke="var(--line)"/>`];
+  for (const i of d.intervals) parts.push(`<rect x="${x(i.start)}" y="8" width="${Math.max(1, x(i.end) - x(i.start))}" height="32" fill="${i.available ? "var(--rec)" : "var(--na)"}"><title>${esc(fmtT(i.start))} → ${esc(fmtT(i.end))} · ${i.segments} segmentos · ${esc(i.volume_ids.join(", "))}</title></rect>`);
+  for (const g of d.gaps) parts.push(`<rect x="${x(g.start)}" y="40" width="${Math.max(2, x(g.end || t) - x(g.start))}" height="6" fill="var(--gap)"><title>hueco: ${esc(g.reason)} ${esc(fmtT(g.start))}</title></rect>`);
+  const svg = $("#tl"); svg.setAttribute("viewBox", `0 0 ${W} 56`); svg.setAttribute("preserveAspectRatio", "none"); svg.innerHTML = parts.join("");
+  $("#tlx").textContent = `${fmtT(f)} — ${fmtT(t)} · ${d.intervals.length} intervalos · ${d.gaps.length} huecos`;
+  svg.onclick = ev => { const r = svg.getBoundingClientRect(); play(new Date(f.getTime() + (ev.clientX - r.left) / r.width * span)); };
+  $("#ef").value = toLocalInput(new Date(t - 10 * 60e3)); $("#et").value = toLocalInput(t);
+}
+
+async function play(at) {
+  const from = new Date(at.getTime() - 5e3), to = new Date(at.getTime() + 30 * 60e3);
+  const p = await api(`/api/v1/cameras/${encodeURIComponent(tlRange.cam)}/playback?from=${from.toISOString()}&to=${to.toISOString()}`, {method: "POST"});
+  const url = location.origin + p.url, v = $("#vid");
+  if (v.canPlayType("application/vnd.apple.mpegurl")) {
+    v.src = url; v.play().catch(() => {});
+    $("#pinfo").textContent = `Desde ${fmtT(from)} · enlace válido hasta ${fmtT(p.expires_at)}`;
+  } else {
+    v.removeAttribute("src");
+    $("#pinfo").innerHTML = `Este navegador no reproduce HLS de forma nativa. Abrí este enlace en VLC (válido hasta ${esc(fmtT(p.expires_at))}):<br><code>${esc(url)}</code>`;
+  }
+}
+
+async function doExport() {
+  const st = $("#estat");
+  const body = {camera_id: $("#cam").value, from: new Date($("#ef").value).toISOString(), to: new Date($("#et").value).toISOString()};
+  try {
+    let e = await api("/api/v1/exports", {method: "POST", headers: {"Content-Type": "application/json", "Idempotency-Key": Date.now().toString(36) + Math.random().toString(36).slice(2)}, body: JSON.stringify(body)});
+    while (e.state === "queued" || e.state === "running") {
+      st.textContent = `Exportando… ${Math.round(e.progress * 100)}%`;
+      await new Promise(r => setTimeout(r, 1000));
+      e = await api(`/api/v1/exports/${e.id}`);
+    }
+    if (e.state !== "succeeded") { st.innerHTML = `<span class="bad">${esc(e.error || e.state)}</span>`; return; }
+    const r = await api(`/api/v1/exports/${e.id}/download`, {raw: true});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = e.id + ".zip"; a.textContent = "Descargar " + e.id + ".zip";
+    st.innerHTML = `Listo: ${esc(fmtT(e.actual_from))} → ${esc(fmtT(e.actual_to))} · ${fmtGB(e.size_bytes)} · SHA-256 <code>${esc(e.sha256)}</code><br>`;
+    st.appendChild(a);
+  } catch (err) { st.innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
+}
+
+show("dash");
+</script>
+</body>
+</html>

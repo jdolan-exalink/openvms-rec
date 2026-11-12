@@ -20,6 +20,7 @@ import (
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/health"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/volumes"
+	"github.com/jdolan-exalink/openvms-rec/web"
 )
 
 // Server holds dependencies of the HTTP handlers.
@@ -46,6 +47,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health/live", s.live)
 	mux.HandleFunc("GET /health/ready", s.ready)
 	mux.HandleFunc("GET /metrics", s.metrics)
+	mux.HandleFunc("GET /{$}", s.ui)
 	mux.HandleFunc("GET /api/v1/system/capabilities", s.capabilities)
 	mux.HandleFunc("GET /api/v1/storage", s.storageSummary)
 	mux.HandleFunc("GET /api/v1/storage/volumes", s.listVolumes)
@@ -55,6 +57,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/cameras/{id}/recordings", s.recordings)
 	s.mediaRoutes(mux)
 	return mux
+}
+
+func (s *Server) ui(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; media-src 'self' blob:; img-src 'self' data:; frame-ancestors 'none'")
+	w.Write(web.Index)
 }
 
 func (s *Server) now() time.Time {

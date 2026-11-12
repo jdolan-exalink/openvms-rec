@@ -93,3 +93,10 @@ func Version(ctx context.Context, db *sql.DB) (string, error) {
 	err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&v)
 	return v.String, err
 }
+
+// Backup writes a consistent copy of the live database to dst using
+// VACUUM INTO (safe while the recorder runs). dst must not exist.
+func Backup(ctx context.Context, db *sql.DB, dst string) error {
+	_, err := db.ExecContext(ctx, `VACUUM INTO ?`, dst)
+	return err
+}

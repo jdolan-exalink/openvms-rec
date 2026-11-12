@@ -1,0 +1,39 @@
+[Unit]
+Description=OpenVMS Recorder (NVR)
+Documentation=https://github.com/jdolan-exalink/openvms-rec
+Wants=network-online.target
+After=network-online.target local-fs.target
+
+[Service]
+Type=simple
+User=openvms-recorder
+Group=openvms-recorder
+ExecStart=/usr/local/bin/openvms-recorder serve -config /etc/openvms-recorder/recorder.yaml
+Restart=always
+RestartSec=5
+# Give recorders time to close open segments cleanly.
+TimeoutStopSec=30
+KillMode=mixed
+
+# Hardening. Video volumes can live anywhere outside /usr, /boot and /etc,
+# so ProtectSystem=full (not strict) is used; grant the service user write
+# access on each recording root instead (see deploy/linux/install.sh).
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+StateDirectory=openvms-recorder
+StateDirectoryMode=0750
+UMask=0027
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

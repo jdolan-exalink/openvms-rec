@@ -29,6 +29,7 @@ import (
 	"github.com/jdolan-exalink/openvms-rec/internal/auth"
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
 	"github.com/jdolan-exalink/openvms-rec/internal/db"
+	"github.com/jdolan-exalink/openvms-rec/internal/platform/winsvc"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/health"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/volumes"
@@ -51,6 +52,9 @@ func usage() error {
   openvms-recorder storage init  [-config FILE] VOLUME_ID
   openvms-recorder migrate       [-config FILE]
   openvms-recorder apikey create [-config FILE] NAME
+  openvms-recorder backup        [-config FILE] DEST.db
+  openvms-recorder service install -config ABS_PATH   (Windows)
+  openvms-recorder service uninstall                  (Windows)
   openvms-recorder version`)
 }
 
@@ -66,6 +70,10 @@ func run(args []string) error {
 		return cmdServe(args[1:])
 	case "migrate":
 		return cmdMigrate(args[1:])
+	case "backup":
+		return cmdBackup(args[1:])
+	case "service":
+		return cmdService(args[1:])
 	case "apikey":
 		if len(args) >= 2 && args[1] == "create" {
 			return cmdAPIKeyCreate(args[2:])
@@ -124,17 +132,70 @@ func cmdServe(args []string) error {
 		return err
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	if err := winsvc.KillChildrenOnExit(); err != nil {
+		log.Warn("could not bind FFmpeg lifetime to the recorder", "err", err)
+	}
 	if _, err := exec.LookPath(cfg.Recording.FFmpegPath); err != nil && len(cfg.Cameras) > 0 {
 		return fmt.Errorf("ffmpeg not found (%s): install it or set recording.ffmpeg_path", cfg.Recording.FFmpegPath)
 	}
-	a, err := app.New(ctx, cfg, volumes.OSProber{}, log, version)
-	if err != nil {
-		return err
+	run := func(ctx context.Context) error {
+		a, err := app.New(ctx, cfg, volumes.OSProber{}, log, version)
+		if err != nil {
+			return err
+		}
+		defer a.Close()
+		return a.Run(ctx)
 	}
-	defer a.Close()
-	return a.Run(ctx)
+	if winsvc.IsService() {
+		// Under the SCM stderr goes nowhere: log to a file in the data dir.
+		os.MkdirAll(cfg.Data.Dir, 0o750)
+		if f, err := os.OpenFile(filepath.Join(cfg.Data.Dir, "recorder.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640); err == nil {
+			log = slog.New(slog.NewJSONHandler(f, nil))
+			defer f.Close()
+		}
+		winsvc.Info("OpenVMS Recorder " + version + " starting")
+		return winsvc.Run(run)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return run(ctx)
+}
+
+func cmdService(args []string) error {
+	if len(args) == 0 {
+		return usage()
+	}
+	switch args[0] {
+	case "install":
+		fs := flag.NewFlagSet("service install", flag.ExitOnError)
+		path := fs.String("config", "", "absolute path of the configuration file")
+		fs.Parse(args[1:])
+		if *path == "" {
+			return errors.New("service install needs -config with an absolute path")
+		}
+		abs, err := filepath.Abs(*path)
+		if err != nil {
+			return err
+		}
+		if _, err := config.Load(abs); err != nil {
+			return err
+		}
+		if err := winsvc.Install(abs); err != nil {
+			return err
+		}
+		fmt.Printf("service %s installed (automatic start, restart on failure, account NT SERVICE\\%s).\n", winsvc.Name, winsvc.Name)
+		fmt.Println("Grant that account Modify on the data dir and every recording root, e.g.:")
+		fmt.Printf("  icacls \"D:\\OpenVMS\\Recordings\" /grant \"NT SERVICE\\%s:(OI)(CI)M\"\n", winsvc.Name)
+		fmt.Printf("then: sc start %s\n", winsvc.Name)
+		return nil
+	case "uninstall":
+		if err := winsvc.Uninstall(); err != nil {
+			return err
+		}
+		fmt.Println("service removed; recordings, database and configuration were not touched")
+		return nil
+	}
+	return usage()
 }
 
 func cmdStorageCheck(args []string) error {
@@ -238,5 +299,30 @@ func cmdAPIKeyCreate(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "API key %q created. It is shown only once; store it securely:\n", fs.Arg(0))
 	fmt.Println(tok)
+	return nil
+}
+
+// cmdBackup makes a consistent online copy of the index database. Restore:
+// stop the service, replace recorder.db with the copy (remove -wal/-shm),
+// start the service; startup reconciliation re-checks segments on disk.
+func cmdBackup(args []string) error {
+	fs := flag.NewFlagSet("backup", flag.ExitOnError)
+	cfg, err := loadConfig(fs, args)
+	if err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("backup needs exactly one DEST path")
+	}
+	ctx := context.Background()
+	h, err := openDB(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+	if err := db.Backup(ctx, h, fs.Arg(0)); err != nil {
+		return err
+	}
+	fmt.Println("backup written to", fs.Arg(0))
 	return nil
 }
