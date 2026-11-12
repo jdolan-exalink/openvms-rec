@@ -336,3 +336,21 @@ func (s *Store) CloseOpenGaps(ctx context.Context, cameraID, rep string, t time.
 	}
 	return res.RowsAffected()
 }
+
+// Get returns one segment by id.
+func (s *Store) Get(ctx context.Context, id int64) (Segment, error) {
+	segs, err := s.query(ctx, `WHERE id = ?`, id)
+	if err != nil {
+		return Segment{}, err
+	}
+	if len(segs) == 0 {
+		return Segment{}, sql.ErrNoRows
+	}
+	return segs[0], nil
+}
+
+// ReleaseHolder removes every hold of a holder (export finished/cancelled).
+func (s *Store) ReleaseHolder(ctx context.Context, holder string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM segment_holds WHERE holder = ?`, holder)
+	return err
+}

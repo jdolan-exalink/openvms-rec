@@ -14,6 +14,10 @@
           "type": "string",
           "default": "127.0.0.1:8640",
           "description": "Overridable with OPENVMS_RECORDER_LISTEN."
+        },
+        "api_keys_file": {
+          "type": "string",
+          "description": "File with name:sha256 API key hashes (0600). Required when listen is not loopback."
         }
       }
     },

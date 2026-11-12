@@ -80,6 +80,9 @@ func (c Camera) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
 
 type Server struct {
 	Listen string `yaml:"listen"`
+	// APIKeysFile holds "name:sha256" lines (see `openvms-recorder apikey create`).
+	// Required when listen is not a loopback address.
+	APIKeysFile string `yaml:"api_keys_file"`
 }
 
 // Data holds paths for state that must live outside the video volumes.

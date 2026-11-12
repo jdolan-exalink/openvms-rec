@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
+	"github.com/jdolan-exalink/openvms-rec/internal/exports"
+	"github.com/jdolan-exalink/openvms-rec/internal/playback"
 	"github.com/jdolan-exalink/openvms-rec/internal/segments"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/health"
@@ -33,6 +35,9 @@ type Server struct {
 	Storage *storage.Manager
 	// Streams returns ingest status per camera stream.
 	Streams func() []StreamStatus
+	// Exports and Signer enable exports and HLS playback.
+	Exports *exports.Service
+	Signer  *playback.Signer
 }
 
 // Handler returns the HTTP router.
@@ -40,6 +45,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", s.live)
 	mux.HandleFunc("GET /health/ready", s.ready)
+	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("GET /api/v1/system/capabilities", s.capabilities)
 	mux.HandleFunc("GET /api/v1/storage", s.storageSummary)
 	mux.HandleFunc("GET /api/v1/storage/volumes", s.listVolumes)
@@ -47,6 +53,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/cameras", s.listCameras)
 	mux.HandleFunc("GET /api/v1/cameras/{id}", s.getCamera)
 	mux.HandleFunc("GET /api/v1/cameras/{id}/recordings", s.recordings)
+	s.mediaRoutes(mux)
 	return mux
 }
 
@@ -84,8 +91,8 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 			"recording.rtsp":          "implemented",
 			"cameras.onvif_discovery": "planned",
 			"camera_sd.profile_g":     "planned",
-			"playback":                "planned",
-			"exports":                 "planned",
+			"playback.hls":            "implemented",
+			"exports":                 "implemented",
 		},
 	})
 }

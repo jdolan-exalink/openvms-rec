@@ -4,6 +4,7 @@
 //	openvms-recorder storage check  [-config FILE] [-json]
 //	openvms-recorder storage init   [-config FILE] VOLUME_ID
 //	openvms-recorder migrate        [-config FILE]
+//	openvms-recorder apikey create  [-config FILE] NAME
 //	openvms-recorder version
 package main
 
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jdolan-exalink/openvms-rec/internal/app"
+	"github.com/jdolan-exalink/openvms-rec/internal/auth"
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
 	"github.com/jdolan-exalink/openvms-rec/internal/db"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
@@ -48,6 +50,7 @@ func usage() error {
   openvms-recorder storage check [-config FILE] [-json]
   openvms-recorder storage init  [-config FILE] VOLUME_ID
   openvms-recorder migrate       [-config FILE]
+  openvms-recorder apikey create [-config FILE] NAME
   openvms-recorder version`)
 }
 
@@ -63,6 +66,10 @@ func run(args []string) error {
 		return cmdServe(args[1:])
 	case "migrate":
 		return cmdMigrate(args[1:])
+	case "apikey":
+		if len(args) >= 2 && args[1] == "create" {
+			return cmdAPIKeyCreate(args[2:])
+		}
 	case "storage":
 		if len(args) < 2 {
 			return usage()
@@ -209,3 +216,27 @@ func cmdStorageInit(args []string) error {
 }
 
 func gb(b uint64) string { return fmt.Sprintf("%.1fGB", float64(b)/volumes.GB) }
+
+func cmdAPIKeyCreate(args []string) error {
+	fs := flag.NewFlagSet("apikey create", flag.ExitOnError)
+	cfg, err := loadConfig(fs, args)
+	if err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("apikey create needs exactly one NAME")
+	}
+	if cfg.Server.APIKeysFile == "" {
+		return errors.New("set server.api_keys_file in the configuration first")
+	}
+	tok, k, err := auth.Generate(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	if err := auth.AppendKey(cfg.Server.APIKeysFile, k); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "API key %q created. It is shown only once; store it securely:\n", fs.Arg(0))
+	fmt.Println(tok)
+	return nil
+}

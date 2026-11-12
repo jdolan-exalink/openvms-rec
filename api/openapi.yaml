@@ -59,7 +59,7 @@ paths:
     get:
       tags: [health]
       operationId: metrics
-      x-status: planned
+      x-status: implemented
       description: Prometheus exposition format.
       responses:
         "200": { description: Metrics, content: { text/plain: { schema: { type: string } } } }
@@ -195,11 +195,58 @@ paths:
       responses:
         "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
 
+  /api/v1/cameras/{id}/playback:
+    parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/From" }, { $ref: "#/components/parameters/To" }]
+    post:
+      tags: [recordings]
+      operationId: createPlayback
+      x-status: implemented
+      description: |
+        Returns a short-lived (15 min) HLS URL for the range. Segments are served as recorded (MPEG-TS,
+        no transcoding); gaps become EXT-X-DISCONTINUITY. H.265 plays only where the browser supports it.
+      parameters:
+        - { name: representation, in: query, schema: { type: string, enum: [main, sub], default: main } }
+      responses:
+        "201":
+          description: Playback session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, examples: [/api/v1/playback/eyJ.../index.m3u8] }
+                  expires_at: { type: string, format: date-time }
+  /api/v1/playback/{token}/index.m3u8:
+    parameters: [{ name: token, in: path, required: true, schema: { type: string } }]
+    get:
+      tags: [recordings]
+      operationId: getPlaylist
+      x-status: implemented
+      security: []
+      description: Authorized by the signed token in the path, so video players need no API key.
+      responses:
+        "200": { description: HLS VOD playlist, content: { application/vnd.apple.mpegurl: { schema: { type: string } } } }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/playback/{token}/segments/{segment}:
+    parameters:
+      - { name: token, in: path, required: true, schema: { type: string } }
+      - { name: segment, in: path, required: true, schema: { type: string, pattern: "^[0-9]+\\.ts$" } }
+    get:
+      tags: [recordings]
+      operationId: getPlaybackSegment
+      x-status: implemented
+      security: []
+      responses:
+        "200": { description: MPEG-TS segment, content: { video/mp2t: { schema: { type: string, format: binary } } } }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { description: Volume holding the segment is unavailable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
   /api/v1/exports:
     post:
       tags: [exports]
       operationId: createExport
-      x-status: planned
+      x-status: implemented
       parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       requestBody:
         required: true
@@ -220,17 +267,29 @@ paths:
     get:
       tags: [exports]
       operationId: getExport
-      x-status: planned
+      x-status: implemented
       responses:
         "200": { description: Export, content: { application/json: { schema: { $ref: "#/components/schemas/Export" } } } }
+  /api/v1/exports/{id}/cancel:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    post:
+      tags: [exports]
+      operationId: cancelExport
+      x-status: implemented
+      responses:
+        "202": { description: Cancelling, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/exports/{id}/download:
     parameters: [{ $ref: "#/components/parameters/Id" }]
     get:
       tags: [exports]
       operationId: downloadExport
-      x-status: planned
+      x-status: implemented
       responses:
-        "200": { description: Export archive (media + manifest.json with SHA-256), content: { application/zip: { schema: { type: string, format: binary } } } }
+        "200":
+          description: ZIP with video.mp4 (remuxed, not re-encoded) and manifest.json (SHA-256 of output and every verified source segment, actual cut times, gaps). Header X-Checksum-SHA256 is the archive hash.
+          content: { application/zip: { schema: { type: string, format: binary } } }
+        "409": { $ref: "#/components/responses/Error" }
 
   /api/v1/storage:
     get:
@@ -330,7 +389,7 @@ paths:
     get:
       tags: [jobs]
       operationId: listJobs
-      x-status: planned
+      x-status: implemented
       parameters:
         - { name: kind, in: query, schema: { type: string } }
         - { name: state, in: query, schema: { type: string, enum: [queued, running, succeeded, failed, cancelled] } }
@@ -349,7 +408,11 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
-      description: Hashed API keys stored locally (planned). mTLS for machine-to-machine (planned). The MVP binds to 127.0.0.1 until auth lands.
+      description: |
+        Random API keys (`ovr_...`) created with `openvms-recorder apikey create NAME`; only their SHA-256 is stored.
+        Also accepted as `Authorization: Bearer <key>`. Required for every route except /health/* and the
+        token-signed /api/v1/playback/* routes. Mandatory when the server listens on a non-loopback address.
+        Repeated failures from one client are throttled (429). mTLS for machine-to-machine is planned.
 
   parameters:
     Id: { name: id, in: path, required: true, schema: { type: string } }
@@ -530,6 +593,7 @@ components:
         camera_id: { type: string }
         from: { type: string, format: date-time }
         to: { type: string, format: date-time }
+        size_bytes: { type: integer }
         actual_from: { type: string, format: date-time, description: Cut snaps to keyframes; actual bounds may differ from requested. }
         actual_to: { type: string, format: date-time }
         state: { type: string, enum: [queued, running, succeeded, failed, cancelled] }

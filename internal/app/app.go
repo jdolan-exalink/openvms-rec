@@ -11,13 +11,17 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jdolan-exalink/openvms-rec/internal/api"
+	"github.com/jdolan-exalink/openvms-rec/internal/auth"
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
 	"github.com/jdolan-exalink/openvms-rec/internal/db"
+	"github.com/jdolan-exalink/openvms-rec/internal/exports"
 	"github.com/jdolan-exalink/openvms-rec/internal/ingest"
+	"github.com/jdolan-exalink/openvms-rec/internal/playback"
 	"github.com/jdolan-exalink/openvms-rec/internal/segments"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/retention"
@@ -31,11 +35,14 @@ type App struct {
 	Store     *segments.Store
 	Storage   *storage.Manager
 	Recorders map[string]*ingest.Recorder // key: camera/representation
+	Exports   *exports.Service
+	Signer    *playback.Signer
 	Log       *slog.Logger
 	Version   string
 
 	// StorageInterval is how often volumes are inspected and retention runs.
 	StorageInterval time.Duration
+	Auth            *auth.Authenticator
 }
 
 // New opens the database and builds all components. Nothing runs yet.
@@ -56,6 +63,26 @@ func New(ctx context.Context, cfg config.Config, prober volumes.Prober, log *slo
 	mgr.Policy = CameraPolicy(cfg)
 	a := &App{Cfg: cfg, DB: d, Store: store, Storage: mgr, Recorders: map[string]*ingest.Recorder{},
 		Log: log, Version: version, StorageInterval: 30 * time.Second}
+
+	keys, err := auth.LoadKeys(cfg.Server.APIKeysFile)
+	if err != nil {
+		d.Close()
+		return nil, err
+	}
+	if len(keys) == 0 && !auth.IsLoopback(cfg.Server.Listen) {
+		d.Close()
+		return nil, fmt.Errorf("refusing to listen on %s without API keys: create one with `openvms-recorder apikey create NAME` and set server.api_keys_file", cfg.Server.Listen)
+	}
+	a.Auth = &auth.Authenticator{Keys: keys, Public: func(p string) bool {
+		return strings.HasPrefix(p, "/health/") || strings.HasPrefix(p, "/api/v1/playback/")
+	}}
+	a.Signer, err = playback.NewSigner()
+	if err != nil {
+		d.Close()
+		return nil, err
+	}
+	a.Exports = &exports.Service{DB: d, Store: store, Dir: filepath.Join(cfg.Data.Dir, "exports"),
+		FFmpeg: cfg.Recording.FFmpegPath, Version: version, Log: log, Root: a.volumeRoot}
 
 	secrets, err := config.LoadSecrets(cfg.Data.SecretsFile)
 	if err != nil {
@@ -127,6 +154,9 @@ func CameraPolicy(cfg config.Config) retention.PolicyFunc {
 // Recover reconciles every reachable volume and records the outage while the
 // recorder was down as gaps. Call before starting recorders.
 func (a *App) Recover(ctx context.Context) {
+	if err := a.Exports.RecoverJobs(ctx); err != nil {
+		a.Log.Error("recover export jobs", "err", err)
+	}
 	for _, st := range a.Storage.Refresh(ctx) {
 		if st.State == volumes.StateMissing || st.State == volumes.StateUnready {
 			a.Log.Warn("volume not available at startup; its segments stay indexed", "volume", st.Spec.ID, "state", st.State, "reason", st.Reason)
@@ -206,8 +236,18 @@ func (a *App) Run(ctx context.Context) error {
 
 // Handler returns the API router.
 func (a *App) Handler() http.Handler {
-	return (&api.Server{Cfg: a.Cfg, DB: a.DB, Prober: a.Storage.Prober, Version: a.Version, Log: a.Log,
-		Storage: a.Storage, Streams: a.streams}).Handler()
+	h := (&api.Server{Cfg: a.Cfg, DB: a.DB, Prober: a.Storage.Prober, Version: a.Version, Log: a.Log,
+		Storage: a.Storage, Streams: a.streams, Exports: a.Exports, Signer: a.Signer}).Handler()
+	return api.SecurityHeaders(a.Auth.Middleware(h))
+}
+
+func (a *App) volumeRoot(id string) (string, bool) {
+	for _, st := range a.Storage.Statuses() {
+		if st.Spec.ID == id {
+			return st.Spec.Root, st.State != volumes.StateMissing && st.State != volumes.StateUnready
+		}
+	}
+	return "", false
 }
 
 func (a *App) streams() []api.StreamStatus {
