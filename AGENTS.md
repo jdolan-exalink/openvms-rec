@@ -32,7 +32,7 @@ OpenVMS Recorder es un NVR autónomo. Debe instalarse y funcionar sin OpenVMS Co
 ## Orden de trabajo (PRD §14)
 
 1. Diseño de almacenamiento multiplataforma/multivolumen ✅ (PR 1)
-2. Ingest RTSP estable con cuotas y retención
+2. Ingest RTSP estable con cuotas y retención ✅ (MVP: más playback, export, auth, UI y despliegue)
 3. ONVIF, microSD/Profile G y eventos (con hardware real)
 4. Integración con OpenVMS Core (otro PRD)
 

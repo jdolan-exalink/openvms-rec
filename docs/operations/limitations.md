@@ -1,6 +1,6 @@
 # Informe de limitaciones
 
-Actualizado con cada entrega. Última: **MVP en curso — ingest RTSP** (2026-11-12).
+Actualizado con cada entrega. Última: **MVP — grabación, playback, export, UI y despliegue** (2026-11-12).
 
 ## Implementado y probado (tests automáticos)
 
@@ -15,27 +15,36 @@ Actualizado con cada entrega. Última: **MVP en curso — ingest RTSP** (2026-11
 - Reconexión exponencial con jitter, gaps explícitos (`stream_lost`, `no_volume`, `recorder_stopped`, `recorder_down`), conmutación a otro volumen ante error de disco (ST-04), reconciliación tras `kill -9`/corte de energía.
 - Audio: copia si el contenedor lo admite; G.711 se detecta y se transcodifica solo el audio a AAC (video siempre copiado).
 - Monitor de almacenamiento cada 30 s con probe de escritura y retención automática dentro de `serve`.
+- Playback HLS de los segmentos TS sin transcodificar, con `EXT-X-DISCONTINUITY` en los gaps y tokens HMAC de 15 min. La clave se genera al arrancar: los tokens no sobreviven un reinicio.
+- Export: job idempotente, verifica SHA-256 de cada segmento fuente, retiene los segmentos con hold mientras dura, corta con `-c copy` al keyframe anterior al inicio pedido (el clip puede empezar hasta un GOP antes) y entrega ZIP con `video.mp4` + `manifest.json`. Descargas y exports quedan en `audit_log`.
+- API keys `ovr_…` (solo hash SHA-256 en archivo 0600), `X-API-Key` o `Bearer`, 429 tras 10 fallos/min por IP. `serve` no arranca fuera de loopback sin claves. `/metrics` Prometheus.
+- UI web mínima en español (panel, cámaras, timeline, reproducción, export, almacenamiento), verificada con Chromium headless.
+- `backup DEST` (copia consistente de SQLite con `VACUUM INTO`).
 - Prueba de punta a punta manual con MediaMTX (RTSP con autenticación), 2 cámaras simuladas (H.264+AAC y H.265+G.711), 2 volúmenes, corte de cámara y `kill -9` del recorder.
 
 ## No implementado todavía
 
 - Alta/edición de volúmenes y cámaras por API/UI (hoy: archivo YAML).
-- ONVIF, drivers, microSD/Profile G, eventos, timeline, playback, export, UI.
-- Autenticación, TLS, RBAC, CSRF, allowlist de redes. **Mitigación actual:** `serve` escucha en `127.0.0.1` por defecto y solo hay un endpoint mutante (`validate`, que escribe un marcador en una carpeta vacía). No exponer el puerto a la red hasta que llegue la autenticación.
-- `/metrics`, SMART, latencias de IO, estimación de días de retención.
-- Servicio Windows, systemd, Docker, instaladores, backup/restore de SQLite.
+- ONVIF/descubrimiento, drivers, microSD/Profile G, eventos.
+- Snapshots/miniaturas y vista en vivo en la UI; la reproducción usa HLS nativo del navegador (Safari/Chromium recientes). En Firefox la UI ofrece la URL para VLC.
+- TLS, RBAC y allowlist de redes. Hay API keys, pero todas tienen el mismo permiso. **Mitigación:** sin TLS, exponer el puerto solo detrás de un proxy HTTPS o en red de confianza. La UI guarda la clave en `sessionStorage` y no usa cookies, por lo que no aplica CSRF.
+- SMART, latencias de IO, estimación de días de retención.
+- Restore de SQLite automatizado (hoy: detener servicio y reemplazar el archivo). Instaladores MSI/.deb firmados.
 
 ## Precisión y comportamiento a conocer
 
 - Los tiempos de segmento son reloj del host (UTC) al recibir los paquetes, no el reloj de la cámara: precisión ≈ un GOP + jitter de red. Duración de segmento = objetivo … objetivo + 1 GOP.
 - Si falla un disco a mitad de segmento, la sesión RTSP se reinicia para que el próximo segmento empiece en keyframe en otro volumen: pérdida típica 1–3 s, registrada como gap.
-- En Windows FFmpeg termina por pipe roto si el servicio muere; el job object del servicio nativo llega con el instalador.
+- En Windows FFmpeg se asigna a un job object con `KILL_ON_JOB_CLOSE`, así muere con el servicio.
 
 ## Validado solo parcialmente
 
-- **Windows:** el código de plataforma (GUID de volumen, espacio libre, tipo de unidad, disco de sistema) compila y pasa `go vet`, pero **no se ejecutó en Windows**. Falta runner Windows en CI y pruebas NTFS/ReFS, cambio de letra real, ACL y servicio sin sesión (PRD §11).
+- **Windows:** el código de plataforma (GUID de volumen, espacio libre, tipo de unidad, disco de sistema) compila y pasa `go vet`, pero **no se ejecutó en Windows**, tampoco el servicio ni `install.ps1`. Falta runner Windows en CI y pruebas NTFS/ReFS, cambio de letra real, ACL y servicio sin sesión (PRD §11).
 - **Linux:** probado en ext4 dentro de contenedor. Faltan XFS, ZFS, mdadm, discos extraíbles reales y desconexión física.
 - **Cuota de carpeta** (`FolderQuotaBytes`): soportada en el cálculo, pero no se detecta automáticamente en ningún SO todavía.
+
+- **Docker:** Dockerfile y compose escritos, pero la imagen **no se construyó ni probó** en este entorno.
+- **systemd:** unidad e instalador escritos, no ejecutados en un host con systemd real.
 
 ## Hardware
 
