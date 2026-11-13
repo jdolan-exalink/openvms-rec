@@ -33,6 +33,11 @@ svg.tl{width:100%;height:56px;cursor:crosshair;display:block}
 video{width:100%;max-height:60vh;background:#000;border-radius:6px}
 #login{max-width:420px;margin:12vh auto}code{font-size:12px;word-break:break-all}
 .legend span{margin-right:14px}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.live{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.live figure{margin:0;cursor:pointer;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#000}
+.live img:not([src]){visibility:hidden}
+.live img{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#111}
+.live figcaption{display:flex;justify-content:space-between;gap:8px;padding:6px 8px;font-size:12px;background:var(--panel);color:var(--text)}
 </style>
 </head>
 <body>
@@ -129,7 +134,32 @@ async function dash() {
     <div class="stat"><div class="v">${fmtGB(sum.recorder_bytes)}</div><div class="k">grabado de ${fmtGB(sum.effective_limit_bytes)} utilizables</div></div>
     <div class="stat"><div class="v">${days ? days.toFixed(1) + " d" : "—"}</div><div class="k">retención estimada al bitrate actual</div></div>
   </div></div>
+  ${cams.items.length ? `<div class="card"><h2>En vivo <span class="small muted">· imagen del último keyframe grabado, se actualiza cada 10 s; clic para ver la grabación</span></h2>
+    <div class="live">${cams.items.map(c => `<figure data-live="${esc(c.id)}"><img alt="${esc(c.name || c.id)}" ${thumbs[c.id] ? `src="${thumbs[c.id].url}"` : ""}>
+      <figcaption><b>${esc(c.name || c.id)}</b><span class="muted" data-lt="${esc(c.id)}">${thumbs[c.id] ? esc(thumbAge(thumbs[c.id].at)) : "cargando…"}</span></figcaption></figure>`).join("")}</div></div>` : ""}
   <div class="card"><h2>Cámaras</h2>${camTable(cams.items)}</div>`;
+  document.querySelectorAll("[data-live]").forEach(f => f.onclick = () => { pendingCam = f.dataset.live; show("rec"); });
+  await Promise.all(cams.items.map(c => refreshThumb(c.id)));
+}
+
+// Thumbnails are fetched (so the API key header is sent) and kept between
+// refreshes, so the panel never flashes an empty frame.
+const thumbs = {};
+let pendingCam = null;
+const thumbAge = at => { const s = Math.max(0, Math.round((Date.now() - at) / 1000)); return s < 90 ? `hace ${s} s` : `hace ${Math.round(s / 60)} min`; };
+async function refreshThumb(id) {
+  const lt = document.querySelector(`[data-lt="${CSS.escape(id)}"]`);
+  try {
+    const r = await api(`/api/v1/cameras/${encodeURIComponent(id)}/snapshot`, {raw: true});
+    const at = Date.parse(r.headers.get("X-Snapshot-Time")) || Date.now(), url = URL.createObjectURL(await r.blob());
+    if (thumbs[id]) URL.revokeObjectURL(thumbs[id].url);
+    thumbs[id] = {url, at};
+    const img = document.querySelector(`[data-live="${CSS.escape(id)}"] img`);
+    if (img) img.src = url;
+    if (lt) lt.textContent = thumbAge(at);
+  } catch (e) {
+    if (lt) lt.textContent = e.code === "no_recording" ? "sin grabación todavía" : "sin imagen";
+  }
 }
 
 function camTable(items) {
@@ -354,7 +384,14 @@ async function rec() {
     <div id="estat" class="small"></div></div>`;
   $("#compat").checked = !hevcOK;
   $("#load").onclick = loadTL; $("#exp").onclick = doExport;
-  await loadTL();
+  const jump = pendingCam; pendingCam = null;
+  if (jump && c.items.some(x => x.id === jump)) $("#cam").value = jump;
+  const d = await loadTL();
+  // From the live panel: play the last recorded minute (the segment being
+  // written becomes playable once it closes).
+  const last = jump && d.intervals.at(-1);
+  if (last) play(new Date(Math.max(new Date(last.start).getTime(), new Date(last.end).getTime() - 60e3)))
+    .catch(e => { $("#pinfo").innerHTML = `<span class="bad">${esc(e.message)}</span>`; });
 }
 
 let tlRange;
@@ -370,6 +407,7 @@ async function loadTL() {
   $("#tlx").textContent = `${fmtT(f)} — ${fmtT(t)} · ${d.intervals.length} intervalos · ${d.gaps.length} huecos`;
   svg.onclick = ev => { const r = svg.getBoundingClientRect(); play(new Date(f.getTime() + (ev.clientX - r.left) / r.width * span)); };
   $("#ef").value = toLocalInput(new Date(t - 10 * 60e3)); $("#et").value = toLocalInput(t);
+  return d;
 }
 
 // HEVC (H.265) decoding depends on browser and GPU; H.264 works everywhere.

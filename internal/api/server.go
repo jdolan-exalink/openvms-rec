@@ -60,6 +60,8 @@ type Server struct {
 	staticReg   *cameras.Registry
 	probeOnce   sync.Once
 	probeSem    chan struct{}
+	snapOnce    sync.Once
+	snap        *snapshotCache
 }
 
 // Handler returns the HTTP router.
@@ -81,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/cameras", s.listCameras)
 	mux.HandleFunc("GET /api/v1/cameras/{id}", s.getCamera)
 	mux.HandleFunc("GET /api/v1/cameras/{id}/recordings", s.recordings)
+	mux.HandleFunc("GET /api/v1/cameras/{id}/snapshot", s.cameraSnapshot)
 	s.cameraAdminRoutes(mux)
 	s.volumeAdminRoutes(mux)
 	s.systemRoutes(mux)
@@ -90,7 +93,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) ui(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; media-src 'self' blob:; img-src 'self' data:; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; media-src 'self' blob:; img-src 'self' data: blob:; frame-ancestors 'none'")
 	w.Write(web.Index)
 }
 

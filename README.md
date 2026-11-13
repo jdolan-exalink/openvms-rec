@@ -16,7 +16,7 @@ Funciona sin PostgreSQL, NATS, SeaweedFS, Frigate ni OpenVMS. Especificación: P
 | Playback HLS sin transcodificar con tokens firmados de 15 min y saltos de gaps | ✅ |
 | Export MP4 en ZIP con manifest y checksums, como job idempotente y auditado | ✅ |
 | API keys (solo hash SHA-256, archivo 0600), throttling, `/metrics` Prometheus, cabeceras de seguridad | ✅ |
-| UI web en español: panel, alta/edición de cámaras con prueba de conexión, alta/edición de discos, línea de tiempo, reproducción, export, almacenamiento | ✅ |
+| UI web en español: panel con miniatura casi en vivo de cada cámara, alta/edición de cámaras con prueba de conexión, alta/edición de discos, línea de tiempo, reproducción, export, almacenamiento | ✅ |
 | systemd, imagen Docker multiarch, servicio Windows con instalador PowerShell, `backup` de SQLite | ✅ código; Docker y Windows sin probar en real |
 | ONVIF, microSD/Profile G, eventos, alta de volúmenes por API, TLS | ⏳ planificado |
 

@@ -282,9 +282,12 @@ func (a *App) Recover(ctx context.Context) {
 		if closed > 0 {
 			continue // previous run already recorded why it stopped
 		}
-		// Unclean stop (crash, power loss): record the outage explicitly.
+		// Unclean stop (crash, power loss, forced restart): record the outage
+		// explicitly, however short, so the timeline never implies continuity.
+		// Recovered segments end at their file's last write, so anything above
+		// a small tolerance is a real hole.
 		last, err := a.Store.LastSegmentEnd(ctx, cam, rep)
-		if err == nil && !last.IsZero() && now.Sub(last) > 2*r.Segment {
+		if err == nil && !last.IsZero() && now.Sub(last) > outageTolerance {
 			if id, err := a.Store.OpenGap(ctx, cam, rep, last, "recorder_down"); err == nil {
 				a.Store.CloseGap(ctx, id, now)
 			}
@@ -292,6 +295,10 @@ func (a *App) Recover(ctx context.Context) {
 	}
 	a.Storage.Refresh(ctx)
 }
+
+// outageTolerance is the smallest hole between the last recorded byte and
+// startup that is recorded as a recorder_down gap.
+const outageTolerance = 2 * time.Second
 
 // Run starts storage monitoring, all recorders and the HTTP server, and
 // blocks until ctx is cancelled.

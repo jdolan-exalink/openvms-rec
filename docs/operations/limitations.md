@@ -27,10 +27,10 @@ Actualizado con cada entrega. Última: **MVP — grabación, playback, export, U
 
 ## No implementado todavía
 
-- Alta/edición de volúmenes por API/UI (hoy: archivo YAML).
+- Asignar cámaras a un disco desde la UI (`cameras` de un volumen solo en el YAML).
 - Descubrimiento de cámaras y obtención automática de la URL RTSP por ONVIF: hoy hay que escribir la ruta del stream.
 - ONVIF/descubrimiento, drivers, microSD/Profile G, eventos.
-- Snapshots/miniaturas y vista en vivo en la UI; la reproducción usa HLS nativo del navegador (Safari/Chromium recientes). En Firefox la UI ofrece la URL para VLC.
+- Vista en vivo con video: el panel muestra una miniatura del último keyframe grabado (unos segundos de atraso, actualizada cada 10 s) y la reproducción arranca en el último segmento cerrado (hasta ~1 min de atraso). No se abre una segunda sesión RTSP con la cámara.
 - Las credenciales de cámaras agregadas por la UI se guardan en texto plano en `<data.dir>/camera-credentials.yaml`, protegido solo por permisos (0600 en Linux, ACL del directorio de datos en Windows). No hay cifrado en reposo.
 - "Probar conexión" permite a quien tenga una API key hacer que el servidor abra conexiones RTSP a cualquier host (máximo 2 a la vez). Falta la allowlist de redes de cámaras del PRD.
 - TLS, RBAC y allowlist de redes. Hay API keys, pero todas tienen el mismo permiso. **Mitigación:** sin TLS, exponer el puerto solo detrás de un proxy HTTPS o en red de confianza. La UI guarda la clave en `sessionStorage` y no usa cookies, por lo que no aplica CSRF.

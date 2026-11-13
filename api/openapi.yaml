@@ -284,6 +284,23 @@ paths:
           content:
             application/json:
               schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Capability" } } } }
+  /api/v1/cameras/{id}/snapshot:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [cameras]
+      operationId: cameraSnapshot
+      x-status: implemented
+      description: |
+        JPEG (640 px wide at most) of the newest keyframe already recorded,
+        taken from the segment being written. The camera is never contacted.
+        Cached for 5 s per camera; at most two extractions run at a time.
+        `X-Snapshot-Time` gives the approximate capture time.
+      parameters:
+        - { name: representation, in: query, schema: { type: string, default: main } }
+      responses:
+        "200": { description: JPEG image, content: { image/jpeg: { schema: { type: string, format: binary } } } }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/cameras/{id}/recordings:
     parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/From" }, { $ref: "#/components/parameters/To" }]
     get:

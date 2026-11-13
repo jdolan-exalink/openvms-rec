@@ -354,3 +354,10 @@ func (s *Store) ReleaseHolder(ctx context.Context, holder string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM segment_holds WHERE holder = ?`, holder)
 	return err
 }
+
+// Latest returns up to n of the newest readable segments of a stream (the
+// one being written first, when there is one).
+func (s *Store) Latest(ctx context.Context, cameraID, rep string, n int) ([]Segment, error) {
+	return s.query(ctx, `WHERE camera_id = ? AND representation_id = ? AND status IN ('writing', 'final')
+		ORDER BY start_utc DESC, id DESC LIMIT ?`, cameraID, rep, n)
+}
