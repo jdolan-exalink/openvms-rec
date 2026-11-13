@@ -54,7 +54,7 @@ func Probe(ctx context.Context, ffmpeg string, src Source) ProbeResult {
 	defer cancel()
 	// -t 0 with the null muxer: open, read stream info, write nothing.
 	cmd := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-nostdin",
-		"-rtsp_transport", transport, "-timeout", strconvI(src.Timeout.Microseconds()),
+		"-rtsp_transport", transport, "-allowed_media_types", "video+audio", "-timeout", strconvI(src.Timeout.Microseconds()),
 		"-i", src.URL, "-t", "0", "-f", "null", "-")
 	bindToParent(cmd)
 	var stderr bytes.Buffer

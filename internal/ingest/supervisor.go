@@ -67,6 +67,10 @@ func FFmpegArgs(src Source, audio string) []string {
 	args := []string{
 		"-hide_banner", "-nostdin", "-loglevel", "error",
 		"-rtsp_transport", transport,
+		// SETUP only the tracks we record. Some cameras (seen with a
+		// Provision-ISR unit) answer 453 Not Enough Bandwidth when asked to
+		// also set up their ONVIF metadata track.
+		"-allowed_media_types", mediaTypes(audio),
 		"-timeout", fmt.Sprint(timeout.Microseconds()), // socket I/O timeout (µs)
 		"-fflags", "+genpts+discardcorrupt",
 		"-i", src.URL,
@@ -80,6 +84,13 @@ func FFmpegArgs(src Source, audio string) []string {
 		args = append(args, "-map", "0:a:0?", "-c:a", "copy")
 	}
 	return append(args, "-c:v", "copy", "-f", "mpegts", "-mpegts_flags", "+resend_headers", "pipe:1")
+}
+
+func mediaTypes(audio string) string {
+	if audio == AudioNone {
+		return "video"
+	}
+	return "video+audio"
 }
 
 // State of a camera recorder.
@@ -197,7 +208,7 @@ func (r *Recorder) Run(ctx context.Context) {
 		wait := backoff(attempt, r.MinBackoff, r.MaxBackoff)
 		attempt++
 		r.Metrics.set(func(m *Stats) { m.State, m.LastError = StateBackoff, msg; m.Reconnects++ })
-		r.Log.Warn("stream ended; reconnecting", "camera", r.Sink.CameraID, "source", Redact(r.Source.URL), "err", msg, "retry_in", wait)
+		r.Log.Warn("stream ended; reconnecting", "camera", r.Sink.CameraID, "source", Redact(r.Source.URL), "err", msg, "retry_in", wait.Round(100*time.Millisecond).String())
 		select {
 		case <-ctx.Done():
 		case <-time.After(wait):
