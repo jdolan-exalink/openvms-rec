@@ -747,7 +747,7 @@ components:
       properties:
         start: { type: string, format: date-time }
         end: { type: string, format: date-time }
-        reason: { type: string, examples: [stream_lost, no_volume, volume_failed, recorder_down] }
+        reason: { type: string, examples: [stream_lost, no_volume, volume_failed, recorder_down, recorder_stopped, connecting] }
     Timeline:
       type: object
       properties:

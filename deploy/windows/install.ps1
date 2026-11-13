@@ -27,14 +27,28 @@ $existing = Get-Service -Name $svc -ErrorAction SilentlyContinue
 if ($existing -and $existing.Status -ne 'Stopped') { Stop-Service $svc; $existing.WaitForStatus('Stopped', '00:00:45') }
 
 New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir | Out-Null
+
+# A stopped service (or killed tray) can keep its .exe locked for a few
+# seconds; copying too early fails or leaves the old binary in place.
+function Copy-WhenUnlocked([string]$From, [string]$To) {
+  for ($i = 0; $i -lt 30; $i++) {
+    try {
+      if (Test-Path $To) { [IO.File]::Open($To, 'Open', 'ReadWrite', 'None').Close() }
+      Copy-Item $From $To -Force -ErrorAction Stop
+      return
+    } catch { Start-Sleep -Milliseconds 500 }
+  }
+  throw "$To is still locked after 15 s; close any running copy and retry"
+}
+
 if (Test-Path $exe) { Copy-Item $exe "$exe.prev" -Force }
-Copy-Item $Binary $exe -Force
+Copy-WhenUnlocked $Binary $exe
 if (Test-Path $Tray) {
   # Notification-area panel: starts at every user's logon; it only reads
   # status and asks for elevation (UAC) to start/stop the service.
   $trayExe = Join-Path $InstallDir 'openvms-tray.exe'
-  Get-Process openvms-tray -ErrorAction SilentlyContinue | Stop-Process -Force
-  Copy-Item $Tray $trayExe -Force
+  Get-Process openvms-tray -ErrorAction SilentlyContinue | ForEach-Object { $_ | Stop-Process -Force; $_.WaitForExit(10000) | Out-Null }
+  Copy-WhenUnlocked $Tray $trayExe
   New-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'OpenVMSRecorderTray' `
     -Value "`"$trayExe`" -config `"$config`"" -PropertyType String -Force | Out-Null
 }

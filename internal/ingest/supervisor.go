@@ -188,6 +188,9 @@ func (r *Recorder) Run(ctx context.Context) {
 	if audio == AudioAuto {
 		effAudio = AudioCopy
 	}
+	// Until the first segment arrives (RTSP connect, first keyframe) nothing
+	// is recorded: say so instead of leaving an unexplained hole.
+	r.Sink.OpenGap(time.Now(), "connecting")
 	attempt := 0
 	for ctx.Err() == nil {
 		r.Metrics.set(func(m *Stats) { m.State, m.Audio = StateStarting, effAudio })

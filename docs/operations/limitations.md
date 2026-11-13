@@ -12,7 +12,7 @@ Actualizado con cada entrega. Última: **MVP — grabación, playback, export, U
 - API de salud y almacenamiento; CLI `storage check/init`, `serve`, `migrate`, `version`.
 
 - Ingest RTSP: FFmpeg `-c copy` → MPEG-TS → corte propio en keyframes; cada segmento empieza con PAT/PMT + keyframe y decodifica solo (verificado con ffprobe para H.264 y H.265). Escritura temporal en `.tmp/` del mismo volumen, fsync, rename atómico, SHA-256.
-- Reconexión exponencial con jitter, gaps explícitos (`stream_lost`, `no_volume`, `recorder_stopped`, `recorder_down`), conmutación a otro volumen ante error de disco (ST-04), reconciliación tras `kill -9`/corte de energía.
+- Reconexión exponencial con jitter, gaps explícitos (`stream_lost`, `no_volume`, `recorder_stopped`, `recorder_down`, `connecting` desde que arranca el recorder hasta el primer segmento), conmutación a otro volumen ante error de disco (ST-04), reconciliación tras `kill -9`/corte de energía.
 - Audio: copia si el contenedor lo admite; G.711 se detecta y se transcodifica solo el audio a AAC (video siempre copiado).
 - Monitor de almacenamiento cada 30 s con probe de escritura y retención automática dentro de `serve`.
 - Reproducción en el navegador con hls.js embebido (Chrome, Edge, Firefox) o HLS nativo (Safari). Si el navegador no decodifica HEVC, el "Modo compatible" convierte cada segmento a H.264 720p al vuelo solo para ver (máximo 2 a la vez; usa CPU del servidor). Grabación y export no cambian.

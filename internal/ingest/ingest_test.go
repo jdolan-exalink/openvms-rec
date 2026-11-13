@@ -147,7 +147,8 @@ func TestRecordAcrossVolumes(t *testing.T) {
 	}
 	// Stream ended after 4 s: an explicit gap must exist.
 	gaps, _ := e.store.Gaps(ctx, "cam1", "main", time.Now().Add(-time.Minute), time.Now().Add(time.Minute))
-	if len(gaps) == 0 || gaps[0].Reason != "stream_lost" {
+	// The startup gap (connecting) is closed by the first segment.
+	if len(gaps) != 2 || gaps[0].Reason != "connecting" || gaps[0].End.IsZero() || gaps[1].Reason != "stream_lost" {
 		t.Fatalf("gaps %+v", gaps)
 	}
 }
@@ -193,7 +194,8 @@ func TestNoVolumeRecordsGapInsteadOfWriting(t *testing.T) {
 	ctx := context.Background()
 	segs, _ := e.store.Range(ctx, "cam1", "main", time.Now().Add(-time.Minute), time.Now().Add(time.Minute))
 	gaps, _ := e.store.Gaps(ctx, "cam1", "main", time.Now().Add(-time.Minute), time.Now().Add(time.Minute))
-	if len(segs) != 0 || len(gaps) == 0 || gaps[0].Reason != "no_volume" {
+	// The provisional connecting gap gives way to the real reason.
+	if len(segs) != 0 || len(gaps) != 2 || gaps[0].Reason != "connecting" || gaps[0].End.IsZero() || gaps[1].Reason != "no_volume" {
 		t.Fatalf("segs=%d gaps=%+v", len(segs), gaps)
 	}
 }

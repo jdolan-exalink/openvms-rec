@@ -54,9 +54,10 @@ type Sink struct {
 	// headroom before writing. Updated from observed segment sizes.
 	EstimateBytes uint64
 
-	mu      sync.Mutex
-	gapID   int64 // open gap, 0 = none
-	metrics *Metrics
+	mu        sync.Mutex
+	gapID     int64  // open gap, 0 = none
+	gapReason string // reason of the open gap
+	metrics   *Metrics
 }
 
 // RelativePath is the stable layout of segment files under a volume root.
@@ -73,18 +74,27 @@ func TempPath(root string, id int64) string {
 
 // OpenGap records a hole starting at t (stream lost, no volume...). It is
 // closed when the next segment starts.
+//
+// A "connecting" gap is provisional: a more specific reason (stream_lost,
+// no_volume...) closes it and opens its own gap from t.
 func (s *Sink) OpenGap(t time.Time, reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.gapID != 0 {
-		return
+		if s.gapReason != "connecting" || reason == "connecting" {
+			return
+		}
+		if err := s.Index.CloseGap(context.Background(), s.gapID, t); err != nil {
+			s.Log.Error("close gap", "camera", s.CameraID, "err", err)
+		}
+		s.gapID = 0
 	}
 	id, err := s.Index.OpenGap(context.Background(), s.CameraID, s.Representation, t, reason)
 	if err != nil {
 		s.Log.Error("open gap", "camera", s.CameraID, "err", err)
 		return
 	}
-	s.gapID = id
+	s.gapID, s.gapReason = id, reason
 }
 
 func (s *Sink) closeGap(t time.Time) {
