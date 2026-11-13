@@ -164,6 +164,17 @@
         }
       }
     },
+    "discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed_networks": {
+          "type": "array",
+          "description": "CIDRs the Recorder may probe over ONVIF. Empty: private ranges only.",
+          "items": { "type": "string" }
+        }
+      }
+    },
     "cameras": {
       "type": "array",
       "items": {

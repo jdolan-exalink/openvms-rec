@@ -73,7 +73,7 @@ async function api(path, opts = {}) {
   if (key) h["X-API-Key"] = key;
   const r = await fetch(path, Object.assign({}, opts, {headers: h}));
   if (r.status === 401) { showLogin(); throw new Error("unauthorized"); }
-  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).error.message } catch {} throw new Error(m); }
+  if (!r.ok) { let m = r.statusText, code; try { const j = (await r.json()).error; m = j.message; code = j.code } catch {} const e = new Error(m); e.code = code; throw e; }
   return opts.raw ? r : r.json();
 }
 
@@ -138,7 +138,8 @@ function camTable(items) {
 
 async function cams() {
   const c = await api("/api/v1/cameras");
-  $("#main").innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Cámaras</h2><button class="b primary" id="add">Agregar cámara</button></div>
+  $("#main").innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Cámaras</h2><span class="row" style="margin:0"><label class="small" title="Además del multicast ONVIF, consulta una por una las IP de la subred (sirve cuando el multicast no llega)"><input id="sweep" type="checkbox" checked> barrer la subred</label><button class="b" id="find">Buscar cámaras</button><button class="b primary" id="add">Agregar a mano</button></span></div>
+  <div id="disc"></div>
   <div id="form"></div>
   <p class="muted small">Las capacidades de cada cámara (ONVIF, Profile G, microSD, analíticas) se informan solo con evidencia de pruebas reales; ninguna está confirmada todavía.</p>
   <table><tr><th>Cámara</th><th>Origen</th><th>URL principal</th><th>Estado</th><th></th></tr>
@@ -150,6 +151,7 @@ async function cams() {
   </table></div>
   <div class="card"><h2>Estado de grabación</h2>${camTable(c.items)}</div>`;
   $("#add").onclick = () => camForm();
+  $("#find").onclick = () => discover($("#sweep").checked);
   document.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => camForm(c.items.find(x => x.id === b.dataset.edit)));
   document.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
     if (!confirm(`¿Eliminar la cámara ${b.dataset.del}? Si ya tiene grabaciones no se puede: deshabilitala.`)) return;
@@ -158,11 +160,49 @@ async function cams() {
   });
 }
 
+// Credentials typed during this page session, reused for the next camera of the
+// same site. Kept in memory only: never stored in the browser.
+let lastCreds = {username: "", password: ""};
+const VIA = {multicast: "multicast ONVIF", sweep: "barrido de subred"};
+async function discover(sweep) {
+  const d = $("#disc");
+  d.innerHTML = `<div class="card" style="background:var(--bg)"><p class="muted">Buscando cámaras ONVIF en la red${sweep ? " (multicast y barrido de subred)" : ""}…</p></div>`;
+  try {
+    const r = await api("/api/v1/cameras/discover", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({sweep})});
+    const nics = r.interfaces.map(i => `${esc(i.name)} ${esc(i.prefix)}${i.swept ? " (barrida)" : ""}${i.error ? ` <span class="bad">${esc(i.error)}</span>` : ""}`).join(" · ");
+    d.innerHTML = `<div class="card" style="background:var(--bg)"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Encontradas: ${r.devices.length}</h2><button class="b" id="disc-close">Cerrar</button></div>
+      <p class="muted small">Interfaces: ${nics || "ninguna"}. Solo aparecen equipos con ONVIF habilitado.${r.devices.length ? "" : " Si no aparece ninguna, probá con el barrido de subred o agregala a mano con su IP."}</p>
+      ${r.devices.length ? `<table><tr><th>IP</th><th>Equipo</th><th>Encontrada por</th><th></th></tr>${r.devices.map((x, i) => `<tr>
+        <td><code>${esc(x.address)}</code></td>
+        <td>${esc([x.manufacturer, x.hardware].filter(Boolean).join(" ") || "—")}<div class="muted small">${esc(x.name || "")}</div></td>
+        <td class="small">${esc(VIA[x.via] || x.via)}</td>
+        <td>${x.camera_id ? `<span class="muted small">ya agregada como <b>${esc(x.camera_id)}</b></span>` : x.allowed ? `<button class="b primary" data-disc="${i}">Agregar</button>` : `<span class="warn small">fuera de las redes permitidas (discovery.allowed_networks)</span>`}</td></tr>`).join("")}</table>` : ""}</div>`;
+    $("#disc-close").onclick = () => { d.innerHTML = ""; };
+    d.querySelectorAll("[data-disc]").forEach(b => b.onclick = () => {
+      const x = r.devices[+b.dataset.disc];
+      camForm(null, {host: x.address, xaddr: (x.xaddrs || [])[0] || "", name: x.name || x.hardware || ""});
+      $("#form").scrollIntoView({behavior: "smooth"});
+    });
+  } catch (e) { d.innerHTML = `<div class="card" style="background:var(--bg)"><p class="bad">No se pudo buscar: ${esc(e.message)}</p></div>`; }
+}
+const slug = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63);
+const ONVIFERR = {auth_failed: "la cámara rechazó el usuario o la contraseña (revisá también que ONVIF esté habilitado y que el usuario tenga permiso ONVIF)",
+  probe_failed: "la cámara no respondió por ONVIF en esa IP y puerto (¿ONVIF deshabilitado o puerto distinto de 80?)", busy: "hay otra prueba en curso; reintentá en unos segundos"};
+const CAPSTATE = {confirmed: "confirmada", unsupported: "no soportada", unknown: "anunciada, sin probar", error: "error"};
+
 const AUDIO = {auto: "automático (copia o AAC si hace falta)", copy: "copiar", aac: "convertir a AAC", none: "sin audio"};
-function camForm(cam) {
+function camForm(cam, seed) {
   const edit = !!cam, v = cam || {enabled: true, rtsp_transport: "tcp", audio: "auto", priority: 5};
   const f = $("#form");
+  const host0 = seed ? seed.host : (() => { try { return new URL(String(v.main_url || "").replace(/^rtsps?:/, "http:")).hostname } catch { return "" } })();
   f.innerHTML = `<div class="card" style="background:var(--bg)"><h2>${edit ? "Editar " + esc(v.id) : "Nueva cámara"}</h2>
+    <div class="row">
+      <label class="small">IP de la cámara (ONVIF) <input id="f-host" value="${esc(host0)}" placeholder="192.168.1.10" style="width:150px"></label>
+      <label class="small">Puerto <input id="f-oport" type="number" min="1" max="65535" value="80" style="width:80px"></label>
+      <button class="b" id="f-onvif">Leer por ONVIF</button>
+      <span class="muted small">Completa modelo y URLs solo, con el usuario y la contraseña de abajo.</span>
+    </div>
+    <div id="f-onvif-res" class="small" style="margin-bottom:8px"></div>
     <div class="grid">
       <label class="small">Identificador<br><input id="f-id" value="${esc(v.id || "")}" ${edit ? "disabled" : ""} placeholder="entrada-norte" pattern="[a-z0-9][a-z0-9-]*" style="width:100%"></label>
       <label class="small">Nombre<br><input id="f-name" value="${esc(v.name || "")}" style="width:100%"></label>
@@ -184,6 +224,36 @@ function camForm(cam) {
     <div class="row"><button class="b" id="f-test">Probar conexión</button><button class="b primary" id="f-save">${edit ? "Guardar" : "Crear y grabar"}</button><button class="b" id="f-cancel">Cancelar</button></div>
     <div id="f-res" class="small"></div></div>`;
   $("#f-tr").value = v.rtsp_transport; $("#f-audio").value = v.audio;
+  if (seed) {
+    if (seed.name) $("#f-name").value = seed.name;
+    if (lastCreds.username) { $("#f-user").value = lastCreds.username; $("#f-pass").value = lastCreds.password; }
+  }
+  let xaddr = seed ? seed.xaddr : "";
+  $("#f-host").oninput = () => { xaddr = ""; };
+  $("#f-onvif").onclick = async () => {
+    const r = $("#f-onvif-res"), host = $("#f-host").value.trim();
+    if (!host && !xaddr) { r.innerHTML = `<span class="bad">Escribí la IP de la cámara</span>`; return; }
+    r.textContent = "Leyendo la cámara por ONVIF…";
+    const c = creds();
+    try {
+      const p = await api("/api/v1/cameras/probe", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(Object.assign(xaddr ? {xaddr} : {host, onvif_port: +$("#f-oport").value || 80}, edit ? {camera_id: v.id} : {}, c))});
+      if (c.username) lastCreds = {username: c.username, password: c.password || ""};
+      if (p.suggested.main_url) $("#f-main").value = p.suggested.main_url;
+      if (p.suggested.sub_url) $("#f-sub").value = p.suggested.sub_url;
+      if (!$("#f-name").value.trim() || (seed && $("#f-name").value === seed.name)) $("#f-name").value = p.suggested.name;
+      if (!edit && !$("#f-id").value.trim()) $("#f-id").value = slug(p.model ? p.model + "-" + host.split(".").pop() : "cam-" + host.replace(/\./g, "-"));
+      const prof = p.profiles.map(x => `${esc(x.name || x.token)}: ${esc(x.encoding || "?")} ${x.width ? x.width + "×" + x.height : ""}${x.frame_rate ? " " + x.frame_rate + " fps" : ""}${x.stream_uri === p.main_url ? " <b>(principal)</b>" : x.stream_uri === p.sub_url ? " <b>(secundaria)</b>" : ""}`).join(" · ");
+      r.innerHTML = `<div class="s-healthy">✓ ${esc([p.manufacturer, p.model].filter(Boolean).join(" ") || "Equipo ONVIF")}${p.firmware ? ` · firmware ${esc(p.firmware)}` : ""}${p.serial ? ` · serie ${esc(p.serial)}` : ""}</div>
+        <div class="muted">Perfiles: ${prof || "ninguno"}${Math.abs(p.clock_offset_ms) > 60000 ? ` · <span class="warn">el reloj de la cámara difiere ${Math.round(p.clock_offset_ms / 60000)} min</span>` : ""}</div>
+        ${p.analytics && p.analytics.length ? `<div class="muted">Analíticas anunciadas (sin probar): ${esc(p.analytics.join(", "))}</div>` : ""}
+        ${p.main_url ? "" : `<div class="bad">La cámara no dio una URL RTSP: completala a mano.</div>`}
+        ${p.camera_id ? `<div class="warn">Esta IP ya está cargada como ${esc(p.camera_id)}.</div>` : ""}
+        <details><summary class="muted">Capacidades (${p.capabilities.length})</summary>${p.capabilities.map(x => `<div>${esc(x.capability)}: <b>${esc(CAPSTATE[x.status] || x.status)}</b> <span class="muted">${esc(x.evidence || "")}</span></div>`).join("")}</details>
+        <div class="muted">Revisá los datos y tocá Probar conexión o ${edit ? "Guardar" : "Crear y grabar"}.</div>`;
+    } catch (e) { r.innerHTML = `<span class="bad">✗ ${esc(ONVIFERR[e.code] || e.message)}</span>`; }
+  };
+  if (seed) $("#f-onvif").click();
   $("#f-cancel").onclick = () => { f.innerHTML = ""; };
   const creds = () => {
     const u = $("#f-user").value, p = $("#f-pass").value, o = {};

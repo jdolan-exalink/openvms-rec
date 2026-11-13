@@ -18,6 +18,7 @@ Actualizado con cada entrega. Última: **MVP — grabación, playback, export, U
 - Playback HLS de los segmentos TS sin transcodificar, con `EXT-X-DISCONTINUITY` en los gaps y tokens HMAC de 15 min. La clave se genera al arrancar: los tokens no sobreviven un reinicio.
 - Export: job idempotente, verifica SHA-256 de cada segmento fuente, retiene los segmentos con hold mientras dura, corta con `-c copy` al keyframe anterior al inicio pedido (el clip puede empezar hasta un GOP antes) y entrega ZIP con `video.mp4` + `manifest.json`. Descargas y exports quedan en `audit_log`.
 - API keys `ovr_…` (solo hash SHA-256 en archivo 0600), `X-API-Key` o `Bearer`, 429 tras 10 fallos/min por IP. `serve` no arranca fuera de loopback sin claves. `/metrics` Prometheus.
+- Búsqueda de cámaras en la LAN (WS-Discovery multicast en todas las interfaces más barrido unicast opcional de la subred, hasta /22) y "Leer por ONVIF": modelo, firmware, perfiles y URLs RTSP principal/secundaria completados solos. Solo lectura, sin tocar la configuración de la cámara; limitado a `discovery.allowed_networks` (por defecto redes privadas), incluidas las direcciones de servicio que informa el equipo. Requiere ONVIF habilitado en la cámara y un usuario con permiso ONVIF. Probado con un servidor ONVIF simulado; **sin prueba todavía contra una cámara real**.
 - Alta, edición y baja de cámaras desde la UI/API, con botón "Probar conexión" (códecs, resolución, error de clave/ruta/red). Los cambios se aplican en caliente: solo se reinicia la grabación de esa cámara. Las cámaras del YAML se muestran como solo lectura. Una cámara con grabaciones no se puede borrar, solo deshabilitar.
 - UI web mínima en español (panel, cámaras, timeline, reproducción, export, almacenamiento), verificada con Chromium headless.
 - `backup DEST` (copia consistente de SQLite con `VACUUM INTO`).
@@ -26,11 +27,12 @@ Actualizado con cada entrega. Última: **MVP — grabación, playback, export, U
 ## No implementado todavía
 
 - Alta/edición de volúmenes por API/UI (hoy: archivo YAML).
-- Descubrimiento de cámaras y obtención automática de la URL RTSP por ONVIF: hoy hay que escribir la ruta del stream.
-- ONVIF/descubrimiento, drivers, microSD/Profile G, eventos.
+- ONVIF: solo lectura para el alta (descubrimiento, info del equipo, perfiles y URLs RTSP). Faltan eventos (PullPoint), PTZ, cambio de códec desde la UI, drivers propietarios, microSD/Profile G.
+- Importar canales de un NVR Provision-ISR (existe en openvms, `internal/provisionnvr`, todavía no copiado).
+- El cliente ONVIF autentica con WS-Security (UsernameToken digest). No hace HTTP Digest: un equipo que solo acepte HTTP Digest en ONVIF aparece como `auth_failed`.
 - Snapshots/miniaturas y vista en vivo en la UI; la reproducción usa HLS nativo del navegador (Safari/Chromium recientes). En Firefox la UI ofrece la URL para VLC.
 - Las credenciales de cámaras agregadas por la UI se guardan en texto plano en `<data.dir>/camera-credentials.yaml`, protegido solo por permisos (0600 en Linux, ACL del directorio de datos en Windows). No hay cifrado en reposo.
-- "Probar conexión" permite a quien tenga una API key hacer que el servidor abra conexiones RTSP a cualquier host (máximo 2 a la vez). Falta la allowlist de redes de cámaras del PRD.
+- "Probar conexión" permite a quien tenga una API key hacer que el servidor abra conexiones RTSP a cualquier host (máximo 2 a la vez). La allowlist `discovery.allowed_networks` hoy aplica solo al probe ONVIF, no a la prueba RTSP.
 - TLS, RBAC y allowlist de redes. Hay API keys, pero todas tienen el mismo permiso. **Mitigación:** sin TLS, exponer el puerto solo detrás de un proxy HTTPS o en red de confianza. La UI guarda la clave en `sessionStorage` y no usa cookies, por lo que no aplica CSRF.
 - SMART, latencias de IO, estimación de días de retención.
 - Restore de SQLite automatizado (hoy: detener servicio y reemplazar el archivo). Instaladores MSI/.deb firmados.

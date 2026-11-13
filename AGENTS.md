@@ -7,7 +7,7 @@ OpenVMS Recorder es un NVR autónomo. Debe instalarse y funcionar sin OpenVMS Co
 ## Reglas duras
 
 1. **No modificar el repositorio `jdolan-exalink/openvms`** durante esta fase. La integración será un adaptador posterior (PRD §9).
-2. **No copiar ni importar paquetes internos de OpenVMS** (`internal/provisionnvr`, edge-agent, etc.). Compatibilidad conceptual sí, dependencia binaria no.
+2. **No importar paquetes de OpenVMS como dependencia** (el Recorder compila solo). **Copiar código de `jdolan-exalink/openvms` sí está permitido** (autorizado por el dueño de ambos repos, 2026-11-13) para no rehacer lo que ya está probado: se copia al árbol del Recorder, con una nota de origen en el paquete. Ya copiado: `internal/onvif` (de `openvms/internal/onvif`, más el probe de `internal/agent/onvifdiscover`).
 3. **Sin dependencias obligatorias de Frigate.**
 4. **No afirmar capacidades de hardware sin prueba real.** Toda capacidad de cámara se reporta como `confirmed`, `unsupported`, `unknown` o `error`, con evidencia de la operación ejecutada. Nunca inferir Profile G, microSD replay ni analíticas por fabricante o modelo. La Provision I4-320IPSN-VF-V4 está sin validar.
 5. **Nunca simular reproducción** de microSD ni inventar continuidad: los huecos se registran como gaps.

@@ -32,7 +32,7 @@ cp configs/recorder.example.yaml recorder.yaml   # volúmenes y cámaras
 # UI: http://127.0.0.1:8640/
 ```
 
-Las cámaras se agregan desde la pestaña Cámaras de la UI (o en el YAML). Las credenciales nunca van en la URL: las de la UI se guardan en `<data.dir>/camera-credentials.yaml` y las del YAML en el archivo de secretos referenciado por `credentials_ref`, ambos con permisos 0600. `/metrics` también exige API key (en Prometheus: `bearer_token`). Requiere `ffmpeg` en el PATH (o `recording.ffmpeg_path`). `serve` se niega a escuchar fuera de loopback si no hay API keys.
+Las cámaras se agregan desde la pestaña Cámaras de la UI (o en el YAML). **Buscar cámaras** encuentra los equipos con ONVIF de la red (multicast y, opcionalmente, barrido de la subred) y **Leer por ONVIF** completa modelo y URLs RTSP principal/secundaria con solo el usuario y la contraseña, sin tocar la configuración de la cámara. El probe solo llega a `discovery.allowed_networks` (por defecto, redes privadas). Las credenciales nunca van en la URL: las de la UI se guardan en `<data.dir>/camera-credentials.yaml` y las del YAML en el archivo de secretos referenciado por `credentials_ref`, ambos con permisos 0600. `/metrics` también exige API key (en Prometheus: `bearer_token`). Requiere `ffmpeg` en el PATH (o `recording.ffmpeg_path`). `serve` se niega a escuchar fuera de loopback si no hay API keys.
 
 `storage init` escribe un marcador `.openvms-recorder-volume.json` en la raíz del volumen. Sin marcador el volumen no recibe grabaciones: así un disco desmontado nunca se confunde con la carpeta vacía que queda debajo, y un cambio de letra de unidad sigue identificando el mismo disco. Recorder **nunca formatea, inicializa ni repara** discos.
 
