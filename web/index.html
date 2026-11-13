@@ -43,6 +43,7 @@ video{width:100%;max-height:60vh;background:#000;border-radius:6px}
     <button data-v="cams">Cámaras</button>
     <button data-v="rec">Grabaciones</button>
     <button data-v="storage">Almacenamiento</button>
+    <button data-v="sys">Sistema</button>
   </nav>
   <span id="who"></span>
 </header>
@@ -91,17 +92,18 @@ document.querySelectorAll("#nav button").forEach(b => b.onclick = () => show(b.d
 function show(v) {
   view = v; clearInterval(timer); timer = null;
   document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
-  const fn = ({dash, cams, rec, storage})[v];
+  const fn = ({dash, cams, rec, storage, sys})[v];
+  try { history.replaceState(null, "", "#" + (HASH_OF[v] || v)); } catch {}
   fn().catch(e => { if (e.message !== "unauthorized") $("#main").innerHTML = `<div class="card bad">${esc(e.message)}</div>`; });
   // One poller per view, owned here; a refresh never schedules another, and
   // a slow refresh is skipped instead of piling up requests.
-  if (v === "dash" || v === "cams") {
+  if (v === "dash" || v === "cams" || v === "sys") {
     let busy = false;
     timer = setInterval(async () => {
       if (busy || view !== v || document.hidden || (v === "cams" && $("#form")?.children.length)) return;
       busy = true;
       try { await fn(); } catch {} finally { busy = false; }
-    }, 10000);
+    }, v === "sys" ? 5000 : 10000);
   }
 }
 
@@ -251,6 +253,34 @@ async function storage() {
   });
 }
 
+const MB = 1048576, fmtMB = b => b >= 1024 * MB ? (b / 1073741824).toFixed(1) + " GB" : Math.round(b / MB) + " MB";
+const fmtUp = s => { const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`; };
+const pct = v => (v ?? 0).toFixed(1) + " %";
+async function sys() {
+  const [r, v] = await Promise.all([api("/api/v1/system/resources"), api("/api/v1/storage/volumes")]);
+  const memPct = r.host.mem_total_bytes ? 100 * r.host.mem_used_bytes / r.host.mem_total_bytes : 0;
+  $("#main").innerHTML = `
+  <div class="card"><h2>Recursos · v${esc(r.version)} · ${esc(r.os)}/${esc(r.arch)} · encendido hace ${fmtUp(r.uptime_seconds)}</h2><div class="grid">
+    <div class="stat"><div class="v">${pct(r.recorder.cpu_percent)}</div><div class="k">CPU del recorder (100 % = 1 núcleo)</div></div>
+    <div class="stat"><div class="v">${fmtMB(r.recorder.rss_bytes)}</div><div class="k">RAM del recorder · ${r.goroutines} goroutines</div></div>
+    <div class="stat"><div class="v">${pct(r.ffmpeg_total.cpu_percent)}</div><div class="k">CPU de FFmpeg · procesos: ${r.streams.filter(s => s.ffmpeg).length}</div></div>
+    <div class="stat"><div class="v">${fmtMB(r.ffmpeg_total.rss_bytes)}</div><div class="k">RAM de FFmpeg</div></div>
+    <div class="stat"><div class="v">${pct(r.host.cpu_percent)}</div><div class="k">CPU del equipo (${r.host.cpus} núcleos)</div></div>
+    <div class="stat"><div class="v">${pct(memPct)}</div><div class="k">RAM del equipo · ${fmtMB(r.host.mem_used_bytes)} de ${fmtMB(r.host.mem_total_bytes)}</div></div>
+  </div></div>
+  <div class="card"><h2>Streams</h2>${r.streams.length ? `<table><tr><th>Cámara</th><th>Estado</th><th>Bitrate</th><th>Segmentos</th><th>Reconexiones</th><th>FFmpeg CPU</th><th>FFmpeg RAM</th></tr>
+  ${r.streams.map(s => `<tr><td><b>${esc(s.camera_id)}</b> <span class="muted small">${esc(s.representation)}</span></td>
+    <td>${pill(s.state)}${s.last_error ? `<div class="bad small">${esc(s.last_error)}</div>` : ""}</td>
+    <td>${s.bitrate_kbps ? (s.bitrate_kbps / 1000).toFixed(2) + " Mbps" : "—"}</td><td>${s.segments}</td><td>${s.reconnects}</td>
+    <td>${s.ffmpeg ? pct(s.ffmpeg.cpu_percent) : "—"}</td><td>${s.ffmpeg ? fmtMB(s.ffmpeg.rss_bytes) : "—"}</td></tr>`).join("")}</table>` : `<p class="muted">No hay streams.</p>`}</div>
+  <div class="card"><h2>Discos</h2><table><tr><th>Volumen</th><th>Estado</th><th>Grabado</th><th>Disponible hasta el límite</th><th>Libre en disco</th></tr>
+  ${v.items.map(x => `<tr><td><b>${esc(x.id)}</b><div class="muted small">${esc(x.root_path)}</div></td><td>${pill(x.state)}</td>
+    <td>${fmtGB(x.recorder_bytes)}</td><td>${fmtGB(x.limits.headroom_bytes ?? 0)}</td><td>${fmtGB(x.free_bytes)}</td></tr>`).join("")}</table></div>
+  <div class="card"><h2>Últimos avisos y errores</h2>${r.recent_logs.length ? `<table><tr><th>Hora</th><th>Nivel</th><th>Mensaje</th></tr>
+  ${r.recent_logs.slice(0, 15).map(l => `<tr><td class="small">${fmtT(l.time)}</td><td class="${l.level === "ERROR" ? "bad" : "warn"} small">${esc(l.level)}</td>
+    <td>${esc(l.message)}<div class="muted small">${esc(Object.entries(l.attrs || {}).filter(([k]) => k !== "source").map(([k, val]) => k + "=" + val).join(" · "))}</div></td></tr>`).join("")}</table>` : `<p class="muted">Sin avisos desde el arranque.</p>`}</div>`;
+}
+
 const toLocalInput = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 async function rec() {
   const c = await api("/api/v1/cameras");
@@ -321,7 +351,9 @@ async function doExport() {
   } catch (err) { st.innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
 }
 
-show("dash");
+const HASH_OF = {dash: "panel", cams: "camaras", rec: "grabaciones", storage: "almacenamiento", sys: "sistema"};
+const VIEW_OF = Object.fromEntries(Object.entries(HASH_OF).map(([k, v]) => [v, k]));
+show(VIEW_OF[location.hash.slice(1)] || "dash");
 </script>
 </body>
 </html>

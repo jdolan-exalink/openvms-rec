@@ -28,6 +28,7 @@ import (
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/retention"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/volumes"
+	"github.com/jdolan-exalink/openvms-rec/internal/sysinfo"
 )
 
 // App is the running recorder.
@@ -48,6 +49,10 @@ type App struct {
 	// StorageInterval is how often volumes are inspected and retention runs.
 	StorageInterval time.Duration
 	Auth            *auth.Authenticator
+	// Sampler measures resources; Logs holds recent warnings (set by the
+	// caller when it wraps the logger with Logs.Handler).
+	Sampler *sysinfo.Sampler
+	Logs    *sysinfo.Ring
 
 	mu      sync.Mutex
 	runCtx  context.Context
@@ -76,7 +81,7 @@ func New(ctx context.Context, cfg config.Config, prober volumes.Prober, log *slo
 		return nil, err
 	}
 	a := &App{Cfg: cfg, DB: d, Store: store, Storage: mgr, Recorders: map[string]*ingest.Recorder{},
-		Log: log, Version: version, StorageInterval: 30 * time.Second, running: map[string]*runningStream{}}
+		Log: log, Version: version, StorageInterval: 30 * time.Second, running: map[string]*runningStream{}, Sampler: sysinfo.NewSampler()}
 
 	keys, err := auth.LoadKeys(cfg.Server.APIKeysFile)
 	if err != nil {
@@ -327,7 +332,7 @@ func (a *App) Run(ctx context.Context) error {
 func (a *App) Handler() http.Handler {
 	h := (&api.Server{Cfg: a.Cfg, DB: a.DB, Prober: a.Storage.Prober, Version: a.Version, Log: a.Log,
 		Storage: a.Storage, Streams: a.streams, Exports: a.Exports, Signer: a.Signer,
-		Cameras: a.Cameras, FFmpeg: a.Cfg.Recording.FFmpegPath}).Handler()
+		Cameras: a.Cameras, FFmpeg: a.Cfg.Recording.FFmpegPath, Sampler: a.Sampler, Logs: a.Logs}).Handler()
 	return api.SecurityHeaders(a.Auth.Middleware(h))
 }
 
@@ -349,7 +354,7 @@ func (a *App) streams() []api.StreamStatus {
 		out = append(out, api.StreamStatus{
 			CameraID: r.Sink.CameraID, Representation: r.Sink.Representation, Source: ingest.Redact(r.Source.URL),
 			State: string(m.State), LastError: m.LastError, Reconnects: m.Reconnects, Segments: m.Segments,
-			Bytes: m.Bytes, LastWrite: m.LastWrite, BitrateKbps: m.BitrateKbps, Audio: m.Audio,
+			Bytes: m.Bytes, LastWrite: m.LastWrite, BitrateKbps: m.BitrateKbps, Audio: m.Audio, PID: m.PID,
 		})
 	}
 	return out

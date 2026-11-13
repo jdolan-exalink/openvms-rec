@@ -90,6 +90,7 @@ type StreamStatus struct {
 	LastWrite      time.Time `json:"last_write,omitzero"`
 	BitrateKbps    float64   `json:"bitrate_kbps"`
 	Audio          string    `json:"audio"`
+	PID            int       `json:"pid,omitempty"` // FFmpeg process
 }
 
 // ToVolumeDTO converts an inspected volume to the API representation (also

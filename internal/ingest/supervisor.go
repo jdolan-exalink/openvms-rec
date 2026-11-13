@@ -113,6 +113,7 @@ type Stats struct {
 	LastWrite   time.Time
 	BitrateKbps float64 // last segment
 	Audio       string
+	PID         int // FFmpeg process while a session runs, else 0
 }
 
 // Metrics guards Stats for concurrent readers (API) and the writer (ingest).
@@ -240,6 +241,9 @@ func (r *Recorder) session(ctx context.Context, audio string) (string, error) {
 	if err := cmd.Start(); err != nil {
 		return "", err
 	}
+	pid := cmd.Process.Pid
+	r.Metrics.set(func(m *Stats) { m.PID = pid })
+	defer r.Metrics.set(func(m *Stats) { m.PID = 0 })
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -252,7 +256,7 @@ func (r *Recorder) session(ctx context.Context, audio string) (string, error) {
 			}
 		}
 	}()
-	r.Metrics.set(func(m *Stats) { m.State = StateRecording })
+	r.Metrics.set(func(m *Stats) { m.State, m.LastError = StateRecording, "" })
 	seg := &tsseg.Segmenter{Target: r.Segment}
 	var sink tsseg.Sink = r.Sink
 	if r.Source.Audio == "" || r.Source.Audio == AudioAuto {

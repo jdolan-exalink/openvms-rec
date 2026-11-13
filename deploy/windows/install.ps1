@@ -10,6 +10,7 @@
 #>
 param(
   [Parameter(Mandatory)] [string] $Binary,
+  [string] $Tray = (Join-Path (Split-Path $Binary) 'openvms-tray.exe'),
   [string[]] $Volumes = @(),
   [string] $InstallDir = "$env:ProgramFiles\OpenVMS Recorder",
   [string] $DataDir = "$env:ProgramData\OpenVMS\Recorder"
@@ -28,6 +29,15 @@ if ($existing -and $existing.Status -ne 'Stopped') { Stop-Service $svc; $existin
 New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir | Out-Null
 if (Test-Path $exe) { Copy-Item $exe "$exe.prev" -Force }
 Copy-Item $Binary $exe -Force
+if (Test-Path $Tray) {
+  # Notification-area panel: starts at every user's logon; it only reads
+  # status and asks for elevation (UAC) to start/stop the service.
+  $trayExe = Join-Path $InstallDir 'openvms-tray.exe'
+  Get-Process openvms-tray -ErrorAction SilentlyContinue | Stop-Process -Force
+  Copy-Item $Tray $trayExe -Force
+  New-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'OpenVMSRecorderTray' `
+    -Value "`"$trayExe`" -config `"$config`"" -PropertyType String -Force | Out-Null
+}
 
 if (-not (Test-Path $config)) {
   $example = Join-Path $PSScriptRoot '..\..\configs\recorder.example.yaml'

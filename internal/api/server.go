@@ -23,6 +23,7 @@ import (
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/health"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/volumes"
+	"github.com/jdolan-exalink/openvms-rec/internal/sysinfo"
 	"github.com/jdolan-exalink/openvms-rec/web"
 )
 
@@ -48,10 +49,15 @@ type Server struct {
 	FFmpeg string
 	Probe  func(ctx context.Context, ffmpeg string, src ingest.Source) ingest.ProbeResult
 
-	staticOnce sync.Once
-	staticReg  *cameras.Registry
-	probeOnce  sync.Once
-	probeSem   chan struct{}
+	// Sampler and Logs feed GET /api/v1/system/resources.
+	Sampler *sysinfo.Sampler
+	Logs    *sysinfo.Ring
+
+	samplerOnce sync.Once
+	staticOnce  sync.Once
+	staticReg   *cameras.Registry
+	probeOnce   sync.Once
+	probeSem    chan struct{}
 }
 
 // Handler returns the HTTP router.
@@ -69,6 +75,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/cameras/{id}", s.getCamera)
 	mux.HandleFunc("GET /api/v1/cameras/{id}/recordings", s.recordings)
 	s.cameraAdminRoutes(mux)
+	s.systemRoutes(mux)
 	s.mediaRoutes(mux)
 	return mux
 }

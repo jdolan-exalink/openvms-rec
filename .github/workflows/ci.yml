@@ -46,4 +46,4 @@ jobs:
         env:
           CGO_ENABLED: "0"
           TARGET: ${{ matrix.target }}
-        run: GOOS="${TARGET%/*}" GOARCH="${TARGET#*/}" go build -trimpath -o /dev/null ./cmd/recorder
+        run: GOOS="${TARGET%/*}" GOARCH="${TARGET#*/}" go build -trimpath -o /dev/null ./cmd/recorder && if [ "${TARGET%/*}" = windows ]; then GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-H windowsgui" -o /dev/null ./cmd/tray; fi

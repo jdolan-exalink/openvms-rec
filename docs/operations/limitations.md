@@ -19,6 +19,7 @@ Actualizado con cada entrega. Última: **MVP — grabación, playback, export, U
 - Export: job idempotente, verifica SHA-256 de cada segmento fuente, retiene los segmentos con hold mientras dura, corta con `-c copy` al keyframe anterior al inicio pedido (el clip puede empezar hasta un GOP antes) y entrega ZIP con `video.mp4` + `manifest.json`. Descargas y exports quedan en `audit_log`.
 - API keys `ovr_…` (solo hash SHA-256 en archivo 0600), `X-API-Key` o `Bearer`, 429 tras 10 fallos/min por IP. `serve` no arranca fuera de loopback sin claves. `/metrics` Prometheus.
 - Alta, edición y baja de cámaras desde la UI/API, con botón "Probar conexión" (códecs, resolución, error de clave/ruta/red). Los cambios se aplican en caliente: solo se reinicia la grabación de esa cámara. Las cámaras del YAML se muestran como solo lectura. Una cámara con grabaciones no se puede borrar, solo deshabilitar.
+- Página "Sistema": CPU y RAM del recorder, de cada FFmpeg y del equipo, y los últimos 50 avisos/errores. Panel de bandeja de Windows (`openvms-tray.exe`) con estado por color y control del servicio; **compilado pero no probado todavía en Windows real**.
 - UI web mínima en español (panel, cámaras, timeline, reproducción, export, almacenamiento), verificada con Chromium headless.
 - `backup DEST` (copia consistente de SQLite con `VACUUM INTO`).
 - Prueba de punta a punta manual con MediaMTX (RTSP con autenticación), 2 cámaras simuladas (H.264+AAC y H.265+G.711), 2 volúmenes, corte de cámara y `kill -9` del recorder.

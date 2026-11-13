@@ -19,3 +19,12 @@ func Install(string) error                          { return errNotWindows }
 func Uninstall() error                              { return errNotWindows }
 func Info(string)                                   {}
 func KillChildrenOnExit() error                     { return nil }
+
+// ErrAccessDenied is never returned outside Windows.
+var ErrAccessDenied = errors.New("access denied")
+
+// State is not available outside Windows.
+func State() (string, bool, error) { return "", false, nil }
+
+// Control is not available outside Windows.
+func Control(string) error { return errors.New("windows services are only available on Windows") }

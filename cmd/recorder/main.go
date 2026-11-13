@@ -34,6 +34,7 @@ import (
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/health"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/volumes"
+	"github.com/jdolan-exalink/openvms-rec/internal/sysinfo"
 )
 
 // version is set at build time: -ldflags "-X main.version=v0.1.0".
@@ -132,7 +133,8 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	ring := sysinfo.NewRing(50)
+	log := slog.New(ring.Handler(slog.NewJSONHandler(os.Stderr, nil)))
 	if err := winsvc.KillChildrenOnExit(); err != nil {
 		log.Warn("could not bind FFmpeg lifetime to the recorder", "err", err)
 	}
@@ -144,6 +146,7 @@ func cmdServe(args []string) error {
 		if err != nil {
 			return err
 		}
+		a.Logs = ring
 		defer a.Close()
 		return a.Run(ctx)
 	}
@@ -151,7 +154,7 @@ func cmdServe(args []string) error {
 		// Under the SCM stderr goes nowhere: log to a file in the data dir.
 		os.MkdirAll(cfg.Data.Dir, 0o750)
 		if f, err := os.OpenFile(filepath.Join(cfg.Data.Dir, "recorder.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640); err == nil {
-			log = slog.New(slog.NewJSONHandler(f, nil))
+			log = slog.New(ring.Handler(slog.NewJSONHandler(f, nil)))
 			defer f.Close()
 		}
 		winsvc.Info("OpenVMS Recorder " + version + " starting")

@@ -36,6 +36,8 @@ Las cámaras se agregan desde la pestaña Cámaras de la UI (o en el YAML). Las 
 
 `storage init` escribe un marcador `.openvms-recorder-volume.json` en la raíz del volumen. Sin marcador el volumen no recibe grabaciones: así un disco desmontado nunca se confunde con la carpeta vacía que queda debajo, y un cambio de letra de unidad sigue identificando el mismo disco. Recorder **nunca formatea, inicializa ni repara** discos.
 
+En Windows, `openvms-tray.exe` (se compila con `go build -ldflags "-H windowsgui" ./cmd/tray`) pone un ícono en la bandeja: verde si todo graba, amarillo si algo necesita atención, rojo si el recorder no responde y gris si el servicio está detenido. Desde su menú se inicia, detiene o reinicia el servicio (pide UAC si hace falta), se abren el panel, la página Sistema con CPU/RAM de cada FFmpeg y los últimos errores, y las carpetas de grabaciones y logs.
+
 Instalación como servicio: `deploy/linux/install.sh` (systemd), `deploy/windows/install.ps1` (servicio Windows) o `deploy/docker/compose.yaml`.
 
 ## Varios discos ≠ redundancia

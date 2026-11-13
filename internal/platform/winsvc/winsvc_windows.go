@@ -6,6 +6,7 @@ package winsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -168,4 +169,111 @@ func KillChildrenOnExit() error {
 	}
 	return windows.AssignProcessToJobObject(job, windows.CurrentProcess())
 	// The handle is intentionally never closed: it closes when the process exits.
+}
+
+// ErrAccessDenied means the caller needs elevation for the operation.
+var ErrAccessDenied = windows.ERROR_ACCESS_DENIED
+
+// State returns the service state ("running", "stopped", "start_pending",
+// "stop_pending", ...) using only query rights, so it works without
+// elevation. installed is false when the service is not registered.
+func State() (state string, installed bool, err error) {
+	s, closeFn, err := open(windows.SERVICE_QUERY_STATUS)
+	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	defer closeFn()
+	st, err := s.Query()
+	if err != nil {
+		return "", true, err
+	}
+	return stateName(st.State), true, nil
+}
+
+func stateName(s svc.State) string {
+	switch s {
+	case svc.Running:
+		return "running"
+	case svc.Stopped:
+		return "stopped"
+	case svc.StartPending:
+		return "start_pending"
+	case svc.StopPending:
+		return "stop_pending"
+	case svc.Paused:
+		return "paused"
+	default:
+		return "unknown"
+	}
+}
+
+// Control starts, stops or restarts the service and waits up to 45 s.
+// Returns ErrAccessDenied when the caller lacks the rights.
+func Control(action string) error {
+	s, closeFn, err := open(windows.SERVICE_START | windows.SERVICE_STOP | windows.SERVICE_QUERY_STATUS)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+	stop := func() error {
+		st, err := s.Query()
+		if err != nil || st.State == svc.Stopped {
+			return err
+		}
+		if _, err := s.Control(svc.Stop); err != nil {
+			return err
+		}
+		return wait(s, svc.Stopped)
+	}
+	switch action {
+	case "start":
+		if err := s.Start(); err != nil {
+			return err
+		}
+		return wait(s, svc.Running)
+	case "stop":
+		return stop()
+	case "restart":
+		if err := stop(); err != nil {
+			return err
+		}
+		if err := s.Start(); err != nil {
+			return err
+		}
+		return wait(s, svc.Running)
+	}
+	return fmt.Errorf("unknown action %q", action)
+}
+
+func open(access uint32) (*mgr.Service, func(), error) {
+	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return nil, nil, err
+	}
+	name, _ := windows.UTF16PtrFromString(Name)
+	h, err := windows.OpenService(scm, name, access)
+	if err != nil {
+		windows.CloseServiceHandle(scm)
+		return nil, nil, err
+	}
+	s := &mgr.Service{Name: Name, Handle: h}
+	return s, func() { s.Close(); windows.CloseServiceHandle(scm) }, nil
+}
+
+func wait(s *mgr.Service, want svc.State) error {
+	deadline := time.Now().Add(45 * time.Second)
+	for time.Now().Before(deadline) {
+		st, err := s.Query()
+		if err != nil {
+			return err
+		}
+		if st.State == want {
+			return nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return fmt.Errorf("service did not reach the expected state in 45 s")
 }

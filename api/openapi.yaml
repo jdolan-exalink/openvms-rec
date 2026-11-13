@@ -64,6 +64,86 @@ paths:
       responses:
         "200": { description: Metrics, content: { text/plain: { schema: { type: string } } } }
 
+  /health/status:
+    get:
+      tags: [health]
+      operationId: healthStatus
+      x-status: implemented
+      security: []
+      description: |
+        Short summary for the Windows tray panel. No API key, but only
+        answered to loopback clients without proxy headers (404 otherwise).
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state: { type: string, enum: [ok, warning] }
+                  reasons: { type: array, items: { type: string, enum: [streams_not_recording, volumes_not_writable, storage_alerts] } }
+                  version: { type: string }
+                  uptime_seconds: { type: integer }
+                  streams_total: { type: integer }
+                  streams_recording: { type: integer }
+                  volumes_total: { type: integer }
+                  volumes_writable: { type: integer }
+                  headroom_bytes: { type: integer }
+                  alerts: { type: integer }
+  /api/v1/system/resources:
+    get:
+      tags: [system]
+      operationId: getResources
+      x-status: implemented
+      description: |
+        CPU and memory of the recorder, of each FFmpeg process and of the host,
+        plus the last 50 warnings/errors logged since start. CPU percentages
+        are averaged since the previous call (100 = one core per process).
+      responses:
+        "200":
+          description: Resources
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: string }
+                  os: { type: string }
+                  arch: { type: string }
+                  uptime_seconds: { type: integer }
+                  goroutines: { type: integer }
+                  recorder: { $ref: "#/components/schemas/ProcUsage" }
+                  ffmpeg_total: { $ref: "#/components/schemas/ProcUsage" }
+                  host:
+                    type: object
+                    properties:
+                      cpu_percent: { type: number }
+                      cpus: { type: integer }
+                      mem_total_bytes: { type: integer }
+                      mem_used_bytes: { type: integer }
+                  streams:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        camera_id: { type: string }
+                        representation: { type: string }
+                        state: { type: string }
+                        last_error: { type: string }
+                        bitrate_kbps: { type: number }
+                        reconnects: { type: integer }
+                        segments: { type: integer }
+                        ffmpeg: { $ref: "#/components/schemas/ProcUsage" }
+                  recent_logs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        time: { type: string, format: date-time }
+                        level: { type: string }
+                        message: { type: string }
+                        attrs: { type: object, additionalProperties: { type: string } }
   /api/v1/system/capabilities:
     get:
       tags: [system]
@@ -526,6 +606,12 @@ components:
         retention: { $ref: "#/components/schemas/CameraRetention" }
         has_credentials: { type: boolean, description: Credentials are write-only and never returned. }
         streams: { type: array, items: { $ref: "#/components/schemas/StreamStatus" } }
+    ProcUsage:
+      type: object
+      properties:
+        pid: { type: integer }
+        cpu_percent: { type: number }
+        rss_bytes: { type: integer }
     StreamStatus:
       type: object
       description: Live ingest state of one recorded stream (PRD M03 metrics).
