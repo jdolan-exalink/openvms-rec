@@ -89,9 +89,20 @@ function showLogin(msg) {
 let view = "dash", timer;
 document.querySelectorAll("#nav button").forEach(b => b.onclick = () => show(b.dataset.v));
 function show(v) {
-  view = v; clearInterval(timer);
+  view = v; clearInterval(timer); timer = null;
   document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
-  ({dash, cams, rec, storage})[v]().catch(e => { if (e.message !== "unauthorized") $("#main").innerHTML = `<div class="card bad">${esc(e.message)}</div>`; });
+  const fn = ({dash, cams, rec, storage})[v];
+  fn().catch(e => { if (e.message !== "unauthorized") $("#main").innerHTML = `<div class="card bad">${esc(e.message)}</div>`; });
+  // One poller per view, owned here; a refresh never schedules another, and
+  // a slow refresh is skipped instead of piling up requests.
+  if (v === "dash" || v === "cams") {
+    let busy = false;
+    timer = setInterval(async () => {
+      if (busy || view !== v || document.hidden || (v === "cams" && $("#form")?.children.length)) return;
+      busy = true;
+      try { await fn(); } catch {} finally { busy = false; }
+    }, 10000);
+  }
 }
 
 async function dash() {
@@ -112,7 +123,6 @@ async function dash() {
     <div class="stat"><div class="v">${days ? days.toFixed(1) + " d" : "—"}</div><div class="k">retención estimada al bitrate actual</div></div>
   </div></div>
   <div class="card"><h2>Cámaras</h2>${camTable(cams.items)}</div>`;
-  timer = setInterval(() => view === "dash" && dash().catch(() => {}), 10000);
 }
 
 function camTable(items) {
@@ -146,7 +156,6 @@ async function cams() {
     try { await api(`/api/v1/cameras/${encodeURIComponent(b.dataset.del)}`, {method: "DELETE", raw: true}); cams(); }
     catch (e) { alert(e.message); }
   });
-  timer = setInterval(() => view === "cams" && !$("#form").children.length && cams().catch(() => {}), 10000);
 }
 
 const AUDIO = {auto: "automático (copia o AAC si hace falta)", copy: "copiar", aac: "convertir a AAC", none: "sin audio"};
