@@ -1,0 +1,20 @@
+# Example: two dedicated disks mounted on the host at /srv/cctv-d and /srv/cctv-e.
+# Each recording volume is bind-mounted separately so the recorder sees each
+# filesystem's real identity and free space. Listening on 0.0.0.0 inside the
+# container requires API keys (server.api_keys_file).
+services:
+  recorder:
+    image: openvms-recorder:latest
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile }
+    restart: unless-stopped
+    network_mode: host          # simplest for RTSP to cameras on the LAN
+    environment:
+      OPENVMS_RECORDER_LISTEN: "127.0.0.1:8640"
+    volumes:
+      - ./config:/config:ro     # recorder.yaml, secrets.yaml (0600), api_keys (0600)
+      - recorder-data:/data     # SQLite index, exports
+      - /srv/cctv-d/recordings:/recordings/cctv-d
+      - /srv/cctv-e/recordings:/recordings/cctv-e
+    stop_grace_period: 30s
+volumes:
+  recorder-data:

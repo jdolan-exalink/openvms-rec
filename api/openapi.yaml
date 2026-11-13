@@ -1,0 +1,899 @@
+openapi: 3.1.0
+info:
+  title: OpenVMS Recorder API
+  version: 1.0.0-draft
+  description: |
+    Standalone NVR API (PRD v1.1, M08). Contract-first: this file is the source
+    of truth; handlers follow it.
+
+    Conventions
+    - All timestamps are UTC RFC 3339. Time zones are a presentation concern.
+    - Errors use the `Error` envelope with a stable `code`.
+    - Lists are paginated with `limit` + opaque `cursor`.
+    - Mutating operations accept `Idempotency-Key`; a repeated key with the
+      same body returns the original result.
+    - Raw RTSP/ONVIF URLs and credentials are never returned. Playback uses
+      short-lived tokens.
+    - Operations marked `x-status: planned` are part of the v1 contract but not
+      implemented yet; the server returns 404 for them. `x-status: implemented`
+      operations are served by this build.
+
+    Camera capabilities are reported as confirmed / unsupported / unknown /
+    error with evidence from a real probe; they are never inferred from the
+    vendor or model name.
+  license:
+    name: MIT
+servers:
+  - url: http://127.0.0.1:8640
+security:
+  - apiKey: []
+tags:
+  - name: health
+  - name: system
+  - name: cameras
+  - name: recordings
+  - name: exports
+  - name: storage
+  - name: jobs
+
+paths:
+  /health/live:
+    get:
+      tags: [health]
+      operationId: healthLive
+      x-status: implemented
+      security: []
+      responses:
+        "200": { description: Process is alive, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+  /health/ready:
+    get:
+      tags: [health]
+      operationId: healthReady
+      x-status: implemented
+      security: []
+      description: Ready when the index database answers. A camera being down never makes the service unready.
+      responses:
+        "200": { description: Ready, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+        "503": { $ref: "#/components/responses/Error" }
+  /metrics:
+    get:
+      tags: [health]
+      operationId: metrics
+      x-status: implemented
+      description: Prometheus exposition format.
+      responses:
+        "200": { description: Metrics, content: { text/plain: { schema: { type: string } } } }
+
+  /health/status:
+    get:
+      tags: [health]
+      operationId: healthStatus
+      x-status: implemented
+      security: []
+      description: |
+        Short summary for the Windows tray panel. No API key, but only
+        answered to loopback clients without proxy headers (404 otherwise).
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state: { type: string, enum: [ok, warning] }
+                  reasons: { type: array, items: { type: string, enum: [streams_not_recording, volumes_not_writable, storage_alerts] } }
+                  version: { type: string }
+                  uptime_seconds: { type: integer }
+                  streams_total: { type: integer }
+                  streams_recording: { type: integer }
+                  volumes_total: { type: integer }
+                  volumes_writable: { type: integer }
+                  headroom_bytes: { type: integer }
+                  alerts: { type: integer }
+  /api/v1/system/resources:
+    get:
+      tags: [system]
+      operationId: getResources
+      x-status: implemented
+      description: |
+        CPU and memory of the recorder, of each FFmpeg process and of the host,
+        plus the last 50 warnings/errors logged since start. CPU percentages
+        are averaged since the previous call (100 = one core per process).
+      responses:
+        "200":
+          description: Resources
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: string }
+                  os: { type: string }
+                  arch: { type: string }
+                  uptime_seconds: { type: integer }
+                  goroutines: { type: integer }
+                  recorder: { $ref: "#/components/schemas/ProcUsage" }
+                  ffmpeg_total: { $ref: "#/components/schemas/ProcUsage" }
+                  host:
+                    type: object
+                    properties:
+                      cpu_percent: { type: number }
+                      cpus: { type: integer }
+                      mem_total_bytes: { type: integer }
+                      mem_used_bytes: { type: integer }
+                  streams:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        camera_id: { type: string }
+                        representation: { type: string }
+                        state: { type: string }
+                        last_error: { type: string }
+                        bitrate_kbps: { type: number }
+                        reconnects: { type: integer }
+                        segments: { type: integer }
+                        ffmpeg: { $ref: "#/components/schemas/ProcUsage" }
+                  recent_logs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        time: { type: string, format: date-time }
+                        level: { type: string }
+                        message: { type: string }
+                        attrs: { type: object, additionalProperties: { type: string } }
+  /api/v1/system/capabilities:
+    get:
+      tags: [system]
+      operationId: getSystemCapabilities
+      x-status: implemented
+      responses:
+        "200":
+          description: Features implemented by this build
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version, os, arch, features]
+                properties:
+                  version: { type: string }
+                  os: { type: string }
+                  arch: { type: string }
+                  features:
+                    type: object
+                    additionalProperties: { type: string, enum: [implemented, planned, disabled] }
+
+  /api/v1/cameras:
+    get:
+      tags: [cameras]
+      operationId: listCameras
+      x-status: implemented
+      parameters: [{ $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
+      responses:
+        "200": { description: Cameras, content: { application/json: { schema: { $ref: "#/components/schemas/CameraList" } } } }
+    post:
+      tags: [cameras]
+      operationId: createCamera
+      x-status: implemented
+      description: |
+        Adds a camera and starts recording it without a restart. Credentials
+        are stored in <data.dir>/camera-credentials.yaml (0600) and never
+        returned. 409 camera_exists if the id is taken (including cameras of
+        the configuration file).
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CameraInput" } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Camera" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/cameras/test:
+    post:
+      tags: [cameras]
+      operationId: testCameraStream
+      x-status: implemented
+      description: |
+        Opens an RTSP stream the way the recorder would and reports its
+        codecs, without saving anything. With camera_id and no username, the
+        stored credentials of that camera are used. At most 2 tests run at
+        once (429 otherwise). The URL never appears in the response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, description: "rtsp:// or rtsps:// without credentials" }
+                rtsp_transport: { type: string, enum: [tcp, udp] }
+                camera_id: { type: string }
+                username: { type: string, writeOnly: true }
+                password: { type: string, writeOnly: true, format: password }
+      responses:
+        "200":
+          description: Test result (ok false with an error code when the stream cannot be opened)
+          content: { application/json: { schema: { $ref: "#/components/schemas/StreamTest" } } }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /api/v1/cameras/probe:
+    post:
+      tags: [cameras]
+      operationId: probeCamera
+      x-status: planned
+      description: |
+        Runs real ONVIF / driver operations against a host without saving it
+        and returns the capability matrix with evidence. Host must be inside
+        the configured camera network allowlist (SSRF protection).
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ProbeRequest" } } }
+      responses:
+        "200": { description: Probe result, content: { application/json: { schema: { $ref: "#/components/schemas/ProbeResult" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/cameras/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [cameras]
+      operationId: getCamera
+      x-status: implemented
+      responses:
+        "200": { description: Camera, content: { application/json: { schema: { $ref: "#/components/schemas/Camera" } } } }
+        "404": { $ref: "#/components/responses/Error" }
+    put:
+      tags: [cameras]
+      operationId: updateCamera
+      x-status: implemented
+      description: |
+        Replaces a camera created through the API and restarts only its
+        recording. Omitted username/password keep the stored credentials; an
+        empty username removes them. Cameras of the configuration file are
+        read-only (409 camera_read_only).
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CameraInput" } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Camera" } } } }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [cameras]
+      operationId: deleteCamera
+      x-status: implemented
+      description: |
+        Deletes a camera created through the API. A camera with recordings
+        cannot be deleted (409 camera_has_recordings): disable it instead, so
+        its recordings stay reachable until retention removes them.
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/cameras/{id}/capabilities:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [cameras]
+      operationId: getCameraCapabilities
+      x-status: planned
+      responses:
+        "200":
+          description: Capability matrix
+          content:
+            application/json:
+              schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Capability" } } } }
+  /api/v1/cameras/{id}/snapshot:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [cameras]
+      operationId: cameraSnapshot
+      x-status: implemented
+      description: |
+        JPEG (640 px wide at most) of the newest keyframe already recorded,
+        taken from the segment being written. The camera is never contacted.
+        Cached for 5 s per camera; at most two extractions run at a time.
+        `X-Snapshot-Time` gives the approximate capture time.
+      parameters:
+        - { name: representation, in: query, schema: { type: string, default: main } }
+      responses:
+        "200": { description: JPEG image, content: { image/jpeg: { schema: { type: string, format: binary } } } }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/cameras/{id}/recordings:
+    parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/From" }, { $ref: "#/components/parameters/To" }]
+    get:
+      tags: [recordings]
+      operationId: listRecordings
+      x-status: implemented
+      description: |
+        Timeline for a UTC range: intervals from `recorder_local` and
+        `camera_sd`, plus explicit gaps. Intervals on a missing volume are
+        returned with `available: false`, never dropped.
+      parameters:
+        - { name: representation, in: query, schema: { type: string, enum: [main, sub], default: main } }
+      responses:
+        "200": { description: Timeline, content: { application/json: { schema: { $ref: "#/components/schemas/Timeline" } } } }
+  /api/v1/cameras/{id}/events:
+    parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/From" }, { $ref: "#/components/parameters/To" }, { $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
+    get:
+      tags: [recordings]
+      operationId: listEvents
+      x-status: planned
+      responses:
+        "200":
+          description: Events
+          content:
+            application/json:
+              schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Event" } }, next_cursor: { type: string } } }
+  /api/v1/cameras/{id}/recording/start:
+    parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
+    post:
+      tags: [recordings]
+      operationId: startRecording
+      x-status: planned
+      responses:
+        "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+  /api/v1/cameras/{id}/recording/stop:
+    parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
+    post:
+      tags: [recordings]
+      operationId: stopRecording
+      x-status: planned
+      responses:
+        "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+
+  /api/v1/cameras/{id}/playback:
+    parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/From" }, { $ref: "#/components/parameters/To" }]
+    post:
+      tags: [recordings]
+      operationId: createPlayback
+      x-status: implemented
+      description: |
+        Returns a short-lived (15 min) HLS URL for the range. Segments are served as recorded (MPEG-TS,
+        no transcoding); gaps become EXT-X-DISCONTINUITY. H.265 plays only where the browser supports it.
+        With compat=1, H.265 segments are converted on the fly to H.264 (720p max, audio copied) for
+        viewing only; at most 2 conversions run at once. Recordings and exports are never modified.
+      parameters:
+        - { name: representation, in: query, schema: { type: string, enum: [main, sub], default: main } }
+        - { name: compat, in: query, schema: { type: string, enum: ["1"] }, description: Convert H.265 to H.264 for browsers without HEVC }
+      responses:
+        "201":
+          description: Playback session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, examples: [/api/v1/playback/eyJ.../index.m3u8] }
+                  expires_at: { type: string, format: date-time }
+  /api/v1/playback/{token}/index.m3u8:
+    parameters: [{ name: token, in: path, required: true, schema: { type: string } }]
+    get:
+      tags: [recordings]
+      operationId: getPlaylist
+      x-status: implemented
+      security: []
+      description: Authorized by the signed token in the path, so video players need no API key.
+      responses:
+        "200": { description: HLS VOD playlist, content: { application/vnd.apple.mpegurl: { schema: { type: string } } } }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/playback/{token}/segments/{segment}:
+    parameters:
+      - { name: token, in: path, required: true, schema: { type: string } }
+      - { name: segment, in: path, required: true, schema: { type: string, pattern: "^[0-9]+\\.ts$" } }
+    get:
+      tags: [recordings]
+      operationId: getPlaybackSegment
+      x-status: implemented
+      security: []
+      responses:
+        "200": { description: MPEG-TS segment, content: { video/mp2t: { schema: { type: string, format: binary } } } }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { description: Volume holding the segment is unavailable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/exports:
+    post:
+      tags: [exports]
+      operationId: createExport
+      x-status: implemented
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [camera_id, from, to]
+              properties:
+                camera_id: { type: string }
+                representation: { type: string, enum: [main, sub], default: main }
+                from: { type: string, format: date-time }
+                to: { type: string, format: date-time }
+      responses:
+        "202": { description: Export job queued, content: { application/json: { schema: { $ref: "#/components/schemas/Export" } } } }
+  /api/v1/exports/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [exports]
+      operationId: getExport
+      x-status: implemented
+      responses:
+        "200": { description: Export, content: { application/json: { schema: { $ref: "#/components/schemas/Export" } } } }
+  /api/v1/exports/{id}/cancel:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    post:
+      tags: [exports]
+      operationId: cancelExport
+      x-status: implemented
+      responses:
+        "202": { description: Cancelling, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/exports/{id}/download:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [exports]
+      operationId: downloadExport
+      x-status: implemented
+      responses:
+        "200":
+          description: ZIP with video.mp4 (remuxed, not re-encoded) and manifest.json (SHA-256 of output and every verified source segment, actual cut times, gaps). Header X-Checksum-SHA256 is the archive hash.
+          content: { application/zip: { schema: { type: string, format: binary } } }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /api/v1/storage:
+    get:
+      tags: [storage]
+      operationId: getStorageSummary
+      x-status: implemented
+      responses:
+        "200": { description: Summary, content: { application/json: { schema: { $ref: "#/components/schemas/StorageSummary" } } } }
+  /api/v1/storage/volumes:
+    get:
+      tags: [storage]
+      operationId: listVolumes
+      x-status: implemented
+      responses:
+        "200":
+          description: Volumes with live usage and effective limits
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/Volume" } } } }
+    post:
+      tags: [storage]
+      operationId: createVolume
+      x-status: implemented
+      description: |
+        Add a volume from the UI/API. It is stored in the recorder database
+        (`source: api`); volumes of recorder.yaml stay read-only. The root must
+        be an absolute path that does not overlap another volume. With
+        `initialize: true` the folder is created if missing and the volume
+        marker is written; a non-empty folder without marker is refused
+        (`volume_not_empty`) and nothing is saved. Disks are never formatted.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/VolumeCreate" } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Volume" } } } }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/storage/volumes/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    patch:
+      tags: [storage]
+      operationId: updateVolume
+      x-status: implemented
+      description: Edit limits and flags of an API volume (PUT is accepted as an alias). The root path cannot change; configuration-file volumes answer `volume_read_only`.
+      requestBody:
+        required: true
+        content: { application/merge-patch+json: { schema: { $ref: "#/components/schemas/VolumePatch" } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Volume" } } } }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [storage]
+      operationId: deleteVolume
+      x-status: implemented
+      description: Remove an API volume from the list. Files on disk are left untouched. Refused with `volume_has_recordings` while segments are indexed on it (disable it instead).
+      responses:
+        "204": { description: Removed }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/storage/volumes/{id}/validate:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    post:
+      tags: [storage]
+      operationId: validateVolume
+      x-status: implemented
+      description: |
+        Initializes the volume marker on an EMPTY root (refuses non-empty
+        roots without a marker) and runs a write/fsync/read probe. Never
+        formats or repairs a disk.
+      responses:
+        "200": { description: Volume after validation, content: { application/json: { schema: { $ref: "#/components/schemas/Volume" } } } }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/storage/volumes/{id}/drain:
+    parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
+    post:
+      tags: [storage]
+      operationId: drainVolume
+      x-status: planned
+      description: Stop placing new segments on the volume; optionally queue a checksum-verified migration job.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { migrate_segments: { type: boolean, default: false } } }
+      responses:
+        "202": { description: Draining, content: { application/json: { schema: { $ref: "#/components/schemas/Volume" } } } }
+  /api/v1/storage/policies:
+    get:
+      tags: [storage]
+      operationId: listStoragePolicies
+      x-status: planned
+      responses:
+        "200":
+          description: Policies
+          content:
+            application/json:
+              schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/StoragePolicy" } } } }
+  /api/v1/storage/policies/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    patch:
+      tags: [storage]
+      operationId: updateStoragePolicy
+      x-status: planned
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content: { application/merge-patch+json: { schema: { $ref: "#/components/schemas/StoragePolicy" } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/StoragePolicy" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /api/v1/jobs:
+    get:
+      tags: [jobs]
+      operationId: listJobs
+      x-status: implemented
+      parameters:
+        - { name: kind, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string, enum: [queued, running, succeeded, failed, cancelled] } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: Jobs
+          content:
+            application/json:
+              schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Job" } }, next_cursor: { type: string } } }
+
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Random API keys (`ovr_...`) created with `openvms-recorder apikey create NAME`; only their SHA-256 is stored.
+        Also accepted as `Authorization: Bearer <key>`. Required for every route except /health/* and the
+        token-signed /api/v1/playback/* routes. Mandatory when the server listens on a non-loopback address.
+        Repeated failures from one client are throttled (429). mTLS for machine-to-machine is planned.
+
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string } }
+    From: { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+    To: { name: to, in: query, required: true, schema: { type: string, format: date-time } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+    Cursor: { name: cursor, in: query, schema: { type: string } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, schema: { type: string, maxLength: 128 } }
+
+  responses:
+    Error:
+      description: Error
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  schemas:
+    Status:
+      type: object
+      required: [status]
+      properties: { status: { type: string } }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, examples: [volume_not_found, volume_not_empty, not_ready] }
+            message: { type: string }
+
+    CapabilityStatus:
+      type: string
+      enum: [confirmed, unsupported, unknown, error]
+    Capability:
+      type: object
+      required: [capability, status, checked_at]
+      properties:
+        capability: { type: string, examples: [onvif.media2.profiles, onvif.profile_g.get_recordings, onvif.profile_g.replay_uri, onvif.events.pullpoint, storage.sd_card] }
+        status: { $ref: "#/components/schemas/CapabilityStatus" }
+        evidence: { type: string, description: Redacted record of the operation and response that justify the status. }
+        firmware: { type: string }
+        checked_at: { type: string, format: date-time }
+
+    Camera:
+      type: object
+      required: [id, name, source, enabled, main_url]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        source: { type: string, enum: [config, api], description: "config: defined in recorder.yaml (read-only); api: managed through the API/UI" }
+        editable: { type: boolean }
+        enabled: { type: boolean }
+        main_url: { type: string, description: Without credentials. }
+        sub_url: { type: string }
+        rtsp_transport: { type: string, enum: [tcp, udp], default: tcp }
+        audio: { type: string, enum: [auto, copy, aac, none] }
+        dual_recording: { type: boolean }
+        priority: { type: integer, minimum: 0, maximum: 10 }
+        retention: { $ref: "#/components/schemas/CameraRetention" }
+        has_credentials: { type: boolean, description: Credentials are write-only and never returned. }
+        streams: { type: array, items: { $ref: "#/components/schemas/StreamStatus" } }
+    ProcUsage:
+      type: object
+      properties:
+        pid: { type: integer }
+        cpu_percent: { type: number }
+        rss_bytes: { type: integer }
+    StreamStatus:
+      type: object
+      description: Live ingest state of one recorded stream (PRD M03 metrics).
+      properties:
+        camera_id: { type: string }
+        representation: { type: string, enum: [main, sub] }
+        source: { type: string, description: Stream URL with credentials and query removed. }
+        state: { type: string, enum: [starting, recording, backoff, stopped] }
+        last_error: { type: string }
+        reconnects: { type: integer }
+        segments: { type: integer }
+        bytes: { type: integer }
+        last_write: { type: string, format: date-time }
+        bitrate_kbps: { type: number }
+        audio: { type: string, enum: [copy, aac, none] }
+    CameraInput:
+      type: object
+      required: [main_url]
+      properties:
+        id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,62}$", description: Required on create; immutable. }
+        name: { type: string }
+        enabled: { type: boolean, default: true }
+        main_url: { type: string, description: "rtsp:// or rtsps:// without credentials" }
+        sub_url: { type: string }
+        rtsp_transport: { type: string, enum: [tcp, udp], default: tcp }
+        audio: { type: string, enum: [auto, copy, aac, none], default: auto }
+        priority: { type: integer, minimum: 0, maximum: 10, default: 5 }
+        dual_recording: { type: boolean }
+        retention: { $ref: "#/components/schemas/CameraRetention" }
+        username: { type: string, writeOnly: true }
+        password: { type: string, writeOnly: true, format: password }
+    StreamTest:
+      type: object
+      properties:
+        ok: { type: boolean }
+        error: { type: string, enum: [auth_failed, not_found, unreachable, timeout, no_video, error] }
+        message: { type: string }
+        duration_ms: { type: integer }
+        streams:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string, enum: [video, audio, data] }
+              codec: { type: string }
+              profile: { type: string }
+              width: { type: integer }
+              height: { type: integer }
+              fps: { type: number }
+              sample_rate: { type: integer }
+    CameraRetention:
+      type: object
+      properties:
+        main_days: { type: integer, minimum: 0 }
+        sub_days: { type: integer, minimum: 0 }
+        min_days: { type: integer, minimum: 0 }
+    CameraList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Camera" } }
+        next_cursor: { type: string }
+    ProbeRequest:
+      type: object
+      required: [host]
+      properties:
+        host: { type: string }
+        onvif_port: { type: integer, default: 80 }
+        username: { type: string, writeOnly: true }
+        password: { type: string, writeOnly: true, format: password }
+        driver: { type: string }
+    ProbeResult:
+      type: object
+      properties:
+        manufacturer: { type: string }
+        model: { type: string }
+        firmware: { type: string }
+        serial: { type: string }
+        clock_offset_ms: { type: integer }
+        capabilities: { type: array, items: { $ref: "#/components/schemas/Capability" } }
+
+    Interval:
+      type: object
+      required: [start, end, source, available]
+      properties:
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        source: { type: string, enum: [recorder_local, camera_sd] }
+        origin: { type: string, enum: [live_ingest, recovered_sd, remote_only] }
+        available: { type: boolean, description: false when the holding volume is missing or the SD index was listed but replay is not accessible. }
+        volume_ids: { type: array, items: { type: string }, description: Volumes holding the segments of this interval (ST-07). }
+        segments: { type: integer }
+    Gap:
+      type: object
+      required: [start, reason]
+      properties:
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        reason: { type: string, examples: [stream_lost, no_volume, volume_failed, recorder_down, recorder_stopped, connecting] }
+    Timeline:
+      type: object
+      properties:
+        intervals: { type: array, items: { $ref: "#/components/schemas/Interval" } }
+        gaps: { type: array, items: { $ref: "#/components/schemas/Gap" } }
+    Event:
+      type: object
+      required: [event_id, camera_id, timestamp_utc, type, source]
+      properties:
+        event_id: { type: string }
+        camera_id: { type: string }
+        timestamp_utc: { type: string, format: date-time }
+        type: { type: string, examples: [motion, person, vehicle, line_crossing, intrusion, tamper] }
+        class: { type: string }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        bbox: { type: array, items: { type: number }, minItems: 4, maxItems: 4 }
+        zone: { type: string }
+        snapshot: { type: string }
+        source: { type: string }
+        raw_ref: { type: string }
+    Export:
+      type: object
+      required: [id, state]
+      properties:
+        id: { type: string }
+        camera_id: { type: string }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        size_bytes: { type: integer }
+        actual_from: { type: string, format: date-time, description: Cut snaps to keyframes; actual bounds may differ from requested. }
+        actual_to: { type: string, format: date-time }
+        state: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
+        progress: { type: number, minimum: 0, maximum: 1 }
+        sha256: { type: string }
+        error: { type: string }
+
+    Volume:
+      type: object
+      required: [id, root_path, state, writable, capacity_bytes, free_bytes, recorder_bytes, quota, limits, warnings]
+      properties:
+        id: { type: string }
+        root_path: { type: string }
+        stable_id: { type: string, description: "Filesystem UUID / device id (Linux) or volume GUID (Windows). Same id twice = same disk." }
+        mount_point: { type: string }
+        fs_type: { type: string }
+        enabled: { type: boolean }
+        source: { type: string, enum: [config, api], description: "Where the volume is defined: recorder.yaml (read-only) or the API." }
+        editable: { type: boolean }
+        state: { type: string, enum: [healthy, full, degraded, missing, disabled, draining, uninitialized] }
+        state_reason: { type: string }
+        writable: { type: boolean, description: Healthy and allowed by policy (system/network volumes need explicit opt-in). }
+        priority: { type: integer, description: Lower is preferred; lower tiers receive data only when better tiers cannot. }
+        weight: { type: integer }
+        cameras: { type: array, items: { type: string } }
+        is_system: { type: boolean }
+        is_network: { type: boolean }
+        is_removable: { type: boolean }
+        warnings:
+          type: array
+          items: { type: string, enum: [system_volume, network_volume, removable_volume, no_redundancy_assumed, identity_changed] }
+        capacity_bytes: { type: integer }
+        free_bytes: { type: integer }
+        recorder_bytes: { type: integer }
+        quota:
+          type: object
+          properties:
+            max_percent: { type: number }
+            quota_bytes: { type: integer }
+            min_free_bytes: { type: integer }
+        limits:
+          type: object
+          properties:
+            effective_bytes: { type: integer }
+            binding_constraint: { type: string, enum: [quota_percent, quota_absolute, min_free_reserve, available_space, folder_quota] }
+            cleanup_start_bytes: { type: integer }
+            cleanup_target_bytes: { type: integer }
+            headroom_bytes: { type: integer }
+        probe:
+          type: object
+          properties:
+            ok: { type: boolean }
+            latency_ms: { type: number }
+            error: { type: string }
+        inspected_at: { type: string, format: date-time }
+    VolumeCreate:
+      type: object
+      required: [id, root_path]
+      properties:
+        id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,62}$" }
+        root_path: { type: string, description: Absolute path. }
+        enabled: { type: boolean, default: true }
+        max_percent: { type: number, exclusiveMinimum: 0, maximum: 100 }
+        quota_bytes: { type: integer, minimum: 0 }
+        min_free_bytes: { type: integer, minimum: 0 }
+        priority: { type: integer }
+        weight: { type: integer, minimum: 1 }
+        initialize: { type: boolean, description: Create the folder if missing and write the volume marker. Refused on a non-empty folder. }
+    VolumePatch:
+      type: object
+      properties:
+        initialize: { type: boolean, description: Write the marker of an uninitialized volume. }
+        enabled: { type: boolean }
+        max_percent: { type: number, exclusiveMinimum: 0, maximum: 100 }
+        quota_bytes: { type: integer, minimum: 0 }
+        min_free_bytes: { type: integer, minimum: 0 }
+        priority: { type: integer }
+        weight: { type: integer, minimum: 1 }
+    StorageSummary:
+      type: object
+      required: [volumes, writable_volumes, by_state, effective_limit_bytes, headroom_bytes, recorder_bytes, placement, pressure_policy, warnings, alerts]
+      properties:
+        volumes: { type: integer }
+        writable_volumes: { type: integer }
+        by_state: { type: object, additionalProperties: { type: integer } }
+        effective_limit_bytes: { type: integer }
+        headroom_bytes: { type: integer }
+        recorder_bytes: { type: integer }
+        placement: { type: string, enum: [balanced, camera_affinity, manual] }
+        pressure_policy: { type: string, enum: [overwrite_oldest_unprotected, protect_minimum_retention] }
+        warnings: { type: array, items: { type: string } }
+        alerts:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string, enum: [min_retention_violated, retention_pressure, protected_data_exceeds_target] }
+              camera_id: { type: string }
+              message: { type: string }
+    StoragePolicy:
+      type: object
+      properties:
+        id: { type: string }
+        default_max_percent: { type: number, exclusiveMinimum: 0, maximum: 100 }
+        cleanup_start_percent: { type: number }
+        cleanup_target_percent: { type: number }
+        min_free_bytes: { type: integer, minimum: 0 }
+        placement: { type: string, enum: [balanced, camera_affinity, manual] }
+        pressure_policy: { type: string, enum: [overwrite_oldest_unprotected, protect_minimum_retention] }
+    Job:
+      type: object
+      required: [id, kind, state]
+      properties:
+        id: { type: string }
+        kind: { type: string, examples: [export, migrate_segments, sd_recovery, reindex] }
+        state: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
+        progress: { type: number }
+        error: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
