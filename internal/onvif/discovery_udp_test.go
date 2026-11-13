@@ -183,7 +183,7 @@ func (c *callbackRaceConn) ReadFrom([]byte) (int, net.Addr, error) {
 	return 1, &net.UDPAddr{}, nil
 }
 func (c *callbackRaceConn) SetDeadline(d time.Time) error {
-	if !d.IsZero() && time.Until(d) < 0 {
+	if !d.IsZero() && time.Until(d) <= 0 { // <= : Windows clocks can return exactly now
 		c.once.Do(func() { close(c.callbackEntered); <-c.callbackRelease })
 	}
 	c.deadlineMu.Lock()
