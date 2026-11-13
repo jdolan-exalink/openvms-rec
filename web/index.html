@@ -116,7 +116,7 @@ async function dash() {
 }
 
 function camTable(items) {
-  if (!items.length) return `<p class="muted">No hay cámaras configuradas (sección <code>cameras:</code> del YAML).</p>`;
+  if (!items.length) return `<p class="muted">No hay cámaras. Agregalas en la pestaña Cámaras.</p>`;
   return `<table><tr><th>Cámara</th><th>Stream</th><th>Estado</th><th>Bitrate</th><th>Segmentos</th><th>Reconexiones</th><th>Última escritura</th><th>Audio</th></tr>
   ${items.flatMap(c => (c.streams.length ? c.streams : [{}]).map(s => `<tr>
     <td><b>${esc(c.name || c.id)}</b><div class="muted small">${esc(c.id)}</div></td>
@@ -128,10 +128,89 @@ function camTable(items) {
 
 async function cams() {
   const c = await api("/api/v1/cameras");
-  $("#main").innerHTML = `<div class="card"><h2>Cámaras</h2>
-  <p class="muted small">Las capacidades de cada cámara (ONVIF, Profile G, microSD, analíticas) se informan solo con evidencia de pruebas reales; ninguna está confirmada todavía.</p>${camTable(c.items)}</div>`;
-  timer = setInterval(() => view === "cams" && cams().catch(() => {}), 10000);
+  $("#main").innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Cámaras</h2><button class="b primary" id="add">Agregar cámara</button></div>
+  <div id="form"></div>
+  <p class="muted small">Las capacidades de cada cámara (ONVIF, Profile G, microSD, analíticas) se informan solo con evidencia de pruebas reales; ninguna está confirmada todavía.</p>
+  <table><tr><th>Cámara</th><th>Origen</th><th>URL principal</th><th>Estado</th><th></th></tr>
+  ${c.items.map(x => `<tr><td><b>${esc(x.name || x.id)}</b><div class="muted small">${esc(x.id)}</div></td>
+    <td class="small">${x.source === "api" ? "UI / API" : "archivo YAML"}</td>
+    <td class="small"><code>${esc(x.main_url)}</code>${x.has_credentials ? `<div class="muted">con credenciales</div>` : ""}</td>
+    <td>${x.streams.length ? x.streams.map(s => pill(s.state)).join(" ") : pill(x.enabled ? "stopped" : "disabled")}</td>
+    <td>${x.editable ? `<button class="b" data-edit="${esc(x.id)}">Editar</button> <button class="b" data-del="${esc(x.id)}">Eliminar</button>` : `<span class="muted small">editar en recorder.yaml</span>`}</td></tr>`).join("")}
+  </table></div>
+  <div class="card"><h2>Estado de grabación</h2>${camTable(c.items)}</div>`;
+  $("#add").onclick = () => camForm();
+  document.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => camForm(c.items.find(x => x.id === b.dataset.edit)));
+  document.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    if (!confirm(`¿Eliminar la cámara ${b.dataset.del}? Si ya tiene grabaciones no se puede: deshabilitala.`)) return;
+    try { await api(`/api/v1/cameras/${encodeURIComponent(b.dataset.del)}`, {method: "DELETE", raw: true}); cams(); }
+    catch (e) { alert(e.message); }
+  });
+  timer = setInterval(() => view === "cams" && !$("#form").children.length && cams().catch(() => {}), 10000);
 }
+
+const AUDIO = {auto: "automático (copia o AAC si hace falta)", copy: "copiar", aac: "convertir a AAC", none: "sin audio"};
+function camForm(cam) {
+  const edit = !!cam, v = cam || {enabled: true, rtsp_transport: "tcp", audio: "auto", priority: 5};
+  const f = $("#form");
+  f.innerHTML = `<div class="card" style="background:var(--bg)"><h2>${edit ? "Editar " + esc(v.id) : "Nueva cámara"}</h2>
+    <div class="grid">
+      <label class="small">Identificador<br><input id="f-id" value="${esc(v.id || "")}" ${edit ? "disabled" : ""} placeholder="entrada-norte" pattern="[a-z0-9][a-z0-9-]*" style="width:100%"></label>
+      <label class="small">Nombre<br><input id="f-name" value="${esc(v.name || "")}" style="width:100%"></label>
+      <label class="small">Usuario<br><input id="f-user" autocomplete="off" placeholder="${edit && v.has_credentials ? "sin cambios" : ""}" style="width:100%"></label>
+      <label class="small">Contraseña<br><input id="f-pass" type="password" autocomplete="new-password" placeholder="${edit && v.has_credentials ? "sin cambios" : ""}" style="width:100%"></label>
+    </div>
+    <div class="grid" style="margin-top:8px">
+      <label class="small">URL RTSP principal<br><input id="f-main" value="${esc(v.main_url || "")}" placeholder="rtsp://192.168.1.10:554/ruta" style="width:100%"></label>
+      <label class="small">URL RTSP secundaria (opcional)<br><input id="f-sub" value="${esc(v.sub_url || "")}" style="width:100%"></label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label class="small">Transporte <select id="f-tr"><option>tcp</option><option>udp</option></select></label>
+      <label class="small">Audio <select id="f-audio">${Object.entries(AUDIO).map(([k, t]) => `<option value="${k}">${t}</option>`).join("")}</select></label>
+      <label class="small">Prioridad <input id="f-prio" type="number" min="0" max="10" value="${v.priority}" style="width:64px"></label>
+      <label class="small"><input id="f-en" type="checkbox" ${v.enabled ? "checked" : ""}> Grabar</label>
+      <label class="small"><input id="f-dual" type="checkbox" ${v.dual_recording ? "checked" : ""}> Grabar también la secundaria</label>
+    </div>
+    <p class="muted small">Sin usuario ni contraseña en la URL: van en sus campos y se guardan en un archivo del servidor que solo puede leer el servicio, y nunca se vuelven a mostrar.${edit && v.has_credentials ? " Para quitar las credenciales escribí un espacio en Usuario." : ""}</p>
+    <div class="row"><button class="b" id="f-test">Probar conexión</button><button class="b primary" id="f-save">${edit ? "Guardar" : "Crear y grabar"}</button><button class="b" id="f-cancel">Cancelar</button></div>
+    <div id="f-res" class="small"></div></div>`;
+  $("#f-tr").value = v.rtsp_transport; $("#f-audio").value = v.audio;
+  $("#f-cancel").onclick = () => { f.innerHTML = ""; };
+  const creds = () => {
+    const u = $("#f-user").value, p = $("#f-pass").value, o = {};
+    if (u.trim() === "" && u.length) o.username = "";
+    else if (u) o.username = u.trim();
+    if (p) o.password = p;
+    return o;
+  };
+  $("#f-test").onclick = async () => {
+    const r = $("#f-res"); r.textContent = "Probando…";
+    const urls = [["principal", $("#f-main").value.trim()], ["secundaria", $("#f-sub").value.trim()]].filter(x => x[1]);
+    const out = [];
+    for (const [label, url] of urls) {
+      try {
+        const p = await api("/api/v1/cameras/test", {method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(Object.assign({url, rtsp_transport: $("#f-tr").value}, edit ? {camera_id: v.id} : {}, creds()))});
+        out.push(p.ok ? `<div class="s-healthy">✓ ${label}: ${p.streams.map(s => esc(s.kind === "video" ? `${s.codec} ${s.width}×${s.height}${s.fps ? " " + s.fps + " fps" : ""}` : `${s.kind} ${s.codec}${s.sample_rate ? " " + s.sample_rate + " Hz" : ""}`)).join(" · ")}</div>`
+          : `<div class="bad">✗ ${label}: ${esc(PROBE[p.error] || p.message || p.error)}</div>`);
+      } catch (e) { out.push(`<div class="bad">✗ ${label}: ${esc(e.message)}</div>`); }
+    }
+    r.innerHTML = out.join("") || `<span class="bad">Falta la URL principal</span>`;
+  };
+  $("#f-save").onclick = async () => {
+    const r = $("#f-res");
+    const body = Object.assign({name: $("#f-name").value, main_url: $("#f-main").value.trim(), sub_url: $("#f-sub").value.trim(),
+      rtsp_transport: $("#f-tr").value, audio: $("#f-audio").value, priority: +$("#f-prio").value,
+      enabled: $("#f-en").checked, dual_recording: $("#f-dual").checked}, creds());
+    if (!edit) body.id = $("#f-id").value.trim();
+    try {
+      await api(edit ? `/api/v1/cameras/${encodeURIComponent(v.id)}` : "/api/v1/cameras", {method: edit ? "PUT" : "POST",
+        headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+      f.innerHTML = ""; cams();
+    } catch (e) { r.innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  };
+}
+const PROBE = {auth_failed: "usuario o contraseña rechazados", not_found: "la cámara no tiene esa ruta de stream", unreachable: "no se puede conectar (IP o puerto)", timeout: "la cámara no respondió a tiempo", no_video: "el stream no tiene video"};
 
 async function storage() {
   const [sum, v] = await Promise.all([api("/api/v1/storage"), api("/api/v1/storage/volumes")]);

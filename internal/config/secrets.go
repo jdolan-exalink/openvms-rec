@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 
 	"gopkg.in/yaml.v3"
@@ -51,6 +52,39 @@ func LoadSecrets(path string) (Secrets, error) {
 		return s, fmt.Errorf("parse secrets: %w", err)
 	}
 	return s, nil
+}
+
+// SaveSecrets writes s to path atomically with mode 0600.
+func SaveSecrets(path string, s Secrets) error {
+	b, err := yaml.Marshal(s)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".secrets-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(0o600); err != nil && runtime.GOOS != "windows" {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // StreamURL returns the stream URL with credentials injected. The result is

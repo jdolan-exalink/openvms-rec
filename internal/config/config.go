@@ -75,6 +75,55 @@ type CameraRetention struct {
 	MinDays  *int `yaml:"min_days"`
 }
 
+// Validate checks one camera's fields (not its id). globalDual is
+// recording.dual_recording. Issues are "field: problem".
+func (cam Camera) Validate(globalDual bool) []string {
+	var out []string
+	if cam.MainURL == "" {
+		out = append(out, "main_url: required")
+	}
+	for _, f := range []struct{ name, raw string }{{"main_url", cam.MainURL}, {"sub_url", cam.SubURL}} {
+		if f.raw == "" {
+			continue
+		}
+		u, err := url.Parse(f.raw)
+		switch {
+		case err != nil || u.Host == "":
+			out = append(out, f.name+": invalid url")
+		case u.Scheme != "rtsp" && u.Scheme != "rtsps":
+			out = append(out, f.name+": scheme must be rtsp or rtsps")
+		case u.User != nil:
+			out = append(out, f.name+": must not contain credentials; use credentials_ref and the secrets file")
+		}
+	}
+	if cam.Transport != "" && cam.Transport != "tcp" && cam.Transport != "udp" {
+		out = append(out, "transport: must be tcp or udp")
+	}
+	switch cam.Audio {
+	case "", "auto", "copy", "aac", "none":
+	default:
+		out = append(out, "audio: must be auto, copy, aac or none")
+	}
+	if (cam.DualRecording || globalDual) && cam.SubURL == "" {
+		out = append(out, "sub_url: required for dual_recording")
+	}
+	if cam.Priority < 0 || cam.Priority > 10 {
+		out = append(out, "priority: must be in [0, 10]")
+	}
+	if r := cam.Retention; r != nil {
+		for _, d := range []*int{r.MainDays, r.SubDays, r.MinDays} {
+			if d != nil && *d < 0 {
+				out = append(out, "retention: day counts must be >= 0")
+				break
+			}
+		}
+	}
+	return out
+}
+
+// ValidID reports whether id is a valid camera or volume id.
+func ValidID(id string) bool { return volumeID.MatchString(id) }
+
 // IsEnabled defaults to true.
 func (c Camera) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
 
@@ -362,33 +411,8 @@ func (c Config) Validate() error {
 			add("%s.id: duplicate %q", where, cam.ID)
 		}
 		camSeen[cam.ID] = true
-		if cam.MainURL == "" {
-			add("%s.main_url: required", where)
-		}
-		for _, raw := range []string{cam.MainURL, cam.SubURL} {
-			if raw == "" {
-				continue
-			}
-			u, err := url.Parse(raw)
-			switch {
-			case err != nil:
-				add("%s: invalid url", where)
-			case u.Scheme != "rtsp" && u.Scheme != "rtsps":
-				add("%s: url scheme must be rtsp or rtsps", where)
-			case u.User != nil:
-				add("%s: url must not contain credentials; use credentials_ref and the secrets file", where)
-			}
-		}
-		if cam.Transport != "" && cam.Transport != "tcp" && cam.Transport != "udp" {
-			add("%s.transport: must be tcp or udp", where)
-		}
-		switch cam.Audio {
-		case "", "auto", "copy", "aac", "none":
-		default:
-			add("%s.audio: must be auto, copy, aac or none", where)
-		}
-		if (cam.DualRecording || c.Recording.DualRecording) && cam.SubURL == "" {
-			add("%s: dual_recording needs sub_url", where)
+		for _, issue := range cam.Validate(c.Recording.DualRecording) {
+			add("%s.%s", where, issue)
 		}
 	}
 	if c.Data.Dir == "" {

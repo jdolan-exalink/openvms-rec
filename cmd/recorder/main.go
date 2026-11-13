@@ -25,6 +25,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/jdolan-exalink/openvms-rec/internal/api"
 	"github.com/jdolan-exalink/openvms-rec/internal/app"
 	"github.com/jdolan-exalink/openvms-rec/internal/auth"
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
@@ -211,13 +212,10 @@ func cmdStorageCheck(args []string) error {
 	cands := storage.Candidates(sts, cfg.Storage)
 
 	if *asJSON {
-		type row struct {
-			volumes.Status
-			Writable bool
-		}
-		out := make([]row, len(sts))
+		// Same shape as GET /api/v1/storage/volumes.
+		out := make([]api.VolumeDTO, len(sts))
 		for i := range sts {
-			out[i] = row{sts[i], cands[i].Writable}
+			out[i] = api.ToVolumeDTO(sts[i], cands[i].Writable)
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -270,7 +268,18 @@ func cmdStorageInit(args []string) error {
 		if !p.OK {
 			return fmt.Errorf("volume %s initialized but write probe failed: %w", id, p.Err)
 		}
-		fmt.Printf("volume %s ready at %s (stable id %s, probe %s)\n", id, sp.Root, m.StableID, p.Latency.Round(time.Microsecond))
+		// Report the state the recorder will see, e.g. degraded when another
+		// configured volume sits on the same disk.
+		var st volumes.Status
+		for _, x := range (volumes.Inspector{Prober: volumes.OSProber{}}).InspectAll(storage.SpecsFromConfig(cfg, runtime.GOOS)) {
+			if x.Spec.ID == id {
+				st = x
+			}
+		}
+		fmt.Printf("volume %s initialized at %s (stable id %s, probe %s), state %s\n", id, sp.Root, m.StableID, p.Latency.Round(time.Microsecond), st.State)
+		if st.Reason != "" {
+			fmt.Printf("  %s\n", st.Reason)
+		}
 		return nil
 	}
 	return fmt.Errorf("volume %q not in configuration", id)

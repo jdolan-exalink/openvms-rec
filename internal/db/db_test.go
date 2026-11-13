@@ -18,7 +18,7 @@ func TestOpenMigratesIdempotently(t *testing.T) {
 		t.Fatal(err)
 	}
 	v, err := Version(ctx, d)
-	if err != nil || v != "0001_init" {
+	if err != nil || v != "0002_camera_audio" {
 		t.Fatalf("version=%q err=%v", v, err)
 	}
 	var mode string

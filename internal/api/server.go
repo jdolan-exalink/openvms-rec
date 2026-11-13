@@ -11,10 +11,13 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 
+	"github.com/jdolan-exalink/openvms-rec/internal/cameras"
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
 	"github.com/jdolan-exalink/openvms-rec/internal/exports"
+	"github.com/jdolan-exalink/openvms-rec/internal/ingest"
 	"github.com/jdolan-exalink/openvms-rec/internal/playback"
 	"github.com/jdolan-exalink/openvms-rec/internal/segments"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
@@ -39,6 +42,16 @@ type Server struct {
 	// Exports and Signer enable exports and HLS playback.
 	Exports *exports.Service
 	Signer  *playback.Signer
+	// Cameras is the camera registry. Nil: cameras of Cfg, read-only.
+	Cameras *cameras.Registry
+	// FFmpeg runs connection tests; Probe overrides ingest.Probe in tests.
+	FFmpeg string
+	Probe  func(ctx context.Context, ffmpeg string, src ingest.Source) ingest.ProbeResult
+
+	staticOnce sync.Once
+	staticReg  *cameras.Registry
+	probeOnce  sync.Once
+	probeSem   chan struct{}
 }
 
 // Handler returns the HTTP router.
@@ -55,6 +68,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/cameras", s.listCameras)
 	mux.HandleFunc("GET /api/v1/cameras/{id}", s.getCamera)
 	mux.HandleFunc("GET /api/v1/cameras/{id}/recordings", s.recordings)
+	s.cameraAdminRoutes(mux)
 	s.mediaRoutes(mux)
 	return mux
 }

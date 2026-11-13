@@ -16,9 +16,9 @@ Funciona sin PostgreSQL, NATS, SeaweedFS, Frigate ni OpenVMS. Especificación: P
 | Playback HLS sin transcodificar con tokens firmados de 15 min y saltos de gaps | ✅ |
 | Export MP4 en ZIP con manifest y checksums, como job idempotente y auditado | ✅ |
 | API keys (solo hash SHA-256, archivo 0600), throttling, `/metrics` Prometheus, cabeceras de seguridad | ✅ |
-| UI web en español: panel, cámaras, línea de tiempo, reproducción, export, almacenamiento | ✅ |
+| UI web en español: panel, alta/edición de cámaras con prueba de conexión, línea de tiempo, reproducción, export, almacenamiento | ✅ |
 | systemd, imagen Docker multiarch, servicio Windows con instalador PowerShell, `backup` de SQLite | ✅ código; Docker y Windows sin probar en real |
-| ONVIF, microSD/Profile G, eventos, alta de cámaras/volúmenes por API, TLS | ⏳ planificado |
+| ONVIF, microSD/Profile G, eventos, alta de volúmenes por API, TLS | ⏳ planificado |
 
 ## Uso rápido
 
@@ -32,7 +32,7 @@ cp configs/recorder.example.yaml recorder.yaml   # volúmenes y cámaras
 # UI: http://127.0.0.1:8640/
 ```
 
-Las credenciales de cámara van en el archivo de secretos (permisos 0600) referenciado por `credentials_ref`, nunca en la URL del YAML. Requiere `ffmpeg` en el PATH (o `recording.ffmpeg_path`). `serve` se niega a escuchar fuera de loopback si no hay API keys.
+Las cámaras se agregan desde la pestaña Cámaras de la UI (o en el YAML). Las credenciales nunca van en la URL: las de la UI se guardan en `<data.dir>/camera-credentials.yaml` y las del YAML en el archivo de secretos referenciado por `credentials_ref`, ambos con permisos 0600. `/metrics` también exige API key (en Prometheus: `bearer_token`). Requiere `ffmpeg` en el PATH (o `recording.ffmpeg_path`). `serve` se niega a escuchar fuera de loopback si no hay API keys.
 
 `storage init` escribe un marcador `.openvms-recorder-volume.json` en la raíz del volumen. Sin marcador el volumen no recibe grabaciones: así un disco desmontado nunca se confunde con la carpeta vacía que queda debajo, y un cambio de letra de unidad sigue identificando el mismo disco. Recorder **nunca formatea, inicializa ni repara** discos.
 

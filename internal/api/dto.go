@@ -92,6 +92,10 @@ type StreamStatus struct {
 	Audio          string    `json:"audio"`
 }
 
+// ToVolumeDTO converts an inspected volume to the API representation (also
+// used by `storage check -json`).
+func ToVolumeDTO(st volumes.Status, writable bool) VolumeDTO { return toDTO(st, writable) }
+
 func toDTO(st volumes.Status, writable bool) VolumeDTO {
 	cams := st.Spec.Cameras
 	if cams == nil {

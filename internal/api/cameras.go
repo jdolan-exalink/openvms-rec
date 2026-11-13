@@ -5,31 +5,48 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jdolan-exalink/openvms-rec/internal/cameras"
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
+	"github.com/jdolan-exalink/openvms-rec/internal/ingest"
 	"github.com/jdolan-exalink/openvms-rec/internal/segments"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/volumes"
 )
 
-// CameraDTO is the Camera schema (config-managed in this build).
+// CameraDTO is the Camera schema. URLs never carry credentials.
 type CameraDTO struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	Enabled        bool           `json:"enabled"`
-	Transport      string         `json:"rtsp_transport"`
-	Priority       int            `json:"priority"`
-	DualRecording  bool           `json:"dual_recording"`
-	HasCredentials bool           `json:"has_credentials"`
-	Streams        []StreamStatus `json:"streams"`
+	ID             string                  `json:"id"`
+	Name           string                  `json:"name"`
+	Source         string                  `json:"source"`
+	Editable       bool                    `json:"editable"`
+	Enabled        bool                    `json:"enabled"`
+	MainURL        string                  `json:"main_url"`
+	SubURL         string                  `json:"sub_url"`
+	Transport      string                  `json:"rtsp_transport"`
+	Audio          string                  `json:"audio"`
+	Priority       int                     `json:"priority"`
+	DualRecording  bool                    `json:"dual_recording"`
+	Retention      *config.CameraRetention `json:"retention"`
+	HasCredentials bool                    `json:"has_credentials"`
+	Streams        []StreamStatus          `json:"streams"`
 }
 
-func (s *Server) cameraDTO(c config.Camera, streams []StreamStatus) CameraDTO {
+func (s *Server) cameraDTO(e cameras.Entry, streams []StreamStatus) CameraDTO {
+	c := e.Camera
 	t := c.Transport
 	if t == "" {
 		t = "tcp"
 	}
-	d := CameraDTO{ID: c.ID, Name: c.Name, Enabled: c.IsEnabled(), Transport: t, Priority: c.Priority,
-		DualRecording: c.DualRecording || s.Cfg.Recording.DualRecording, HasCredentials: c.CredentialsRef != "",
-		Streams: []StreamStatus{}}
+	a := c.Audio
+	if a == "" {
+		a = "auto"
+	}
+	d := CameraDTO{ID: c.ID, Name: c.Name, Source: e.Source, Editable: e.Source == cameras.SourceAPI && s.Cameras != nil,
+		Enabled: c.IsEnabled(), MainURL: ingest.Redact(c.MainURL), Transport: t, Audio: a, Priority: c.Priority,
+		DualRecording: c.DualRecording || s.Cfg.Recording.DualRecording, Retention: c.Retention,
+		HasCredentials: c.CredentialsRef != "", Streams: []StreamStatus{}}
+	if c.SubURL != "" {
+		d.SubURL = ingest.Redact(c.SubURL)
+	}
 	for _, st := range streams {
 		if st.CameraID == c.ID {
 			d.Streams = append(d.Streams, st)
@@ -47,20 +64,16 @@ func (s *Server) streams() []StreamStatus {
 
 func (s *Server) listCameras(w http.ResponseWriter, _ *http.Request) {
 	streams := s.streams()
-	out := make([]CameraDTO, 0, len(s.Cfg.Cameras))
-	for _, c := range s.Cfg.Cameras {
-		out = append(out, s.cameraDTO(c, streams))
+	list := s.registry().List()
+	out := make([]CameraDTO, 0, len(list))
+	for _, e := range list {
+		out = append(out, s.cameraDTO(e, streams))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
-func (s *Server) findCamera(id string) (config.Camera, bool) {
-	for _, c := range s.Cfg.Cameras {
-		if c.ID == id {
-			return c, true
-		}
-	}
-	return config.Camera{}, false
+func (s *Server) findCamera(id string) (cameras.Entry, bool) {
+	return s.registry().Get(id)
 }
 
 func (s *Server) getCamera(w http.ResponseWriter, r *http.Request) {

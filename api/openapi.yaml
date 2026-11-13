@@ -96,15 +96,49 @@ paths:
     post:
       tags: [cameras]
       operationId: createCamera
-      x-status: planned
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      x-status: implemented
+      description: |
+        Adds a camera and starts recording it without a restart. Credentials
+        are stored in <data.dir>/camera-credentials.yaml (0600) and never
+        returned. 409 camera_exists if the id is taken (including cameras of
+        the configuration file).
       requestBody:
         required: true
-        content: { application/json: { schema: { $ref: "#/components/schemas/CameraCreate" } } }
+        content: { application/json: { schema: { $ref: "#/components/schemas/CameraInput" } } }
       responses:
         "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Camera" } } } }
         "400": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/cameras/test:
+    post:
+      tags: [cameras]
+      operationId: testCameraStream
+      x-status: implemented
+      description: |
+        Opens an RTSP stream the way the recorder would and reports its
+        codecs, without saving anything. With camera_id and no username, the
+        stored credentials of that camera are used. At most 2 tests run at
+        once (429 otherwise). The URL never appears in the response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, description: "rtsp:// or rtsps:// without credentials" }
+                rtsp_transport: { type: string, enum: [tcp, udp] }
+                camera_id: { type: string }
+                username: { type: string, writeOnly: true }
+                password: { type: string, writeOnly: true, format: password }
+      responses:
+        "200":
+          description: Test result (ok false with an error code when the stream cannot be opened)
+          content: { application/json: { schema: { $ref: "#/components/schemas/StreamTest" } } }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /api/v1/cameras/probe:
     post:
       tags: [cameras]
@@ -129,17 +163,35 @@ paths:
       responses:
         "200": { description: Camera, content: { application/json: { schema: { $ref: "#/components/schemas/Camera" } } } }
         "404": { $ref: "#/components/responses/Error" }
-    patch:
+    put:
       tags: [cameras]
       operationId: updateCamera
-      x-status: planned
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      x-status: implemented
+      description: |
+        Replaces a camera created through the API and restarts only its
+        recording. Omitted username/password keep the stored credentials; an
+        empty username removes them. Cameras of the configuration file are
+        read-only (409 camera_read_only).
       requestBody:
         required: true
-        content: { application/merge-patch+json: { schema: { $ref: "#/components/schemas/CameraPatch" } } }
+        content: { application/json: { schema: { $ref: "#/components/schemas/CameraInput" } } }
       responses:
         "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Camera" } } } }
         "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [cameras]
+      operationId: deleteCamera
+      x-status: implemented
+      description: |
+        Deletes a camera created through the API. A camera with recordings
+        cannot be deleted (409 camera_has_recordings): disable it instead, so
+        its recordings stay reachable until retention removes them.
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/cameras/{id}/capabilities:
     parameters: [{ $ref: "#/components/parameters/Id" }]
     get:
@@ -458,20 +510,20 @@ components:
 
     Camera:
       type: object
-      required: [id, name, enabled, driver]
+      required: [id, name, source, enabled, main_url]
       properties:
         id: { type: string }
         name: { type: string }
+        source: { type: string, enum: [config, api], description: "config: defined in recorder.yaml (read-only); api: managed through the API/UI" }
+        editable: { type: boolean }
         enabled: { type: boolean }
-        driver: { type: string, enum: [onvif_generic, provision_isr, hikvision_isapi, dahua_http] }
-        host: { type: string }
+        main_url: { type: string, description: Without credentials. }
+        sub_url: { type: string }
         rtsp_transport: { type: string, enum: [tcp, udp], default: tcp }
-        recording_mode: { type: string, enum: [continuous_with_event_markers] }
+        audio: { type: string, enum: [auto, copy, aac, none] }
         dual_recording: { type: boolean }
-        recording_enabled: { type: boolean }
-        priority: { type: integer }
+        priority: { type: integer, minimum: 0, maximum: 10 }
         retention: { $ref: "#/components/schemas/CameraRetention" }
-        volume_ids: { type: array, items: { type: string } }
         has_credentials: { type: boolean, description: Credentials are write-only and never returned. }
         streams: { type: array, items: { $ref: "#/components/schemas/StreamStatus" } }
     StreamStatus:
@@ -489,34 +541,41 @@ components:
         last_write: { type: string, format: date-time }
         bitrate_kbps: { type: number }
         audio: { type: string, enum: [copy, aac, none] }
-    CameraCreate:
+    CameraInput:
       type: object
-      required: [name, host]
+      required: [main_url]
       properties:
+        id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,62}$", description: Required on create; immutable. }
         name: { type: string }
-        host: { type: string }
-        driver: { type: string, default: onvif_generic }
-        onvif_port: { type: integer }
-        username: { type: string, writeOnly: true }
-        password: { type: string, writeOnly: true, format: password }
-        stream_main_path: { type: string }
-        stream_sub_path: { type: string }
-        rtsp_transport: { type: string, enum: [tcp, udp] }
-        priority: { type: integer }
-        retention: { $ref: "#/components/schemas/CameraRetention" }
-        volume_ids: { type: array, items: { type: string } }
-    CameraPatch:
-      type: object
-      properties:
-        name: { type: string }
-        enabled: { type: boolean }
-        priority: { type: integer }
-        rtsp_transport: { type: string, enum: [tcp, udp] }
+        enabled: { type: boolean, default: true }
+        main_url: { type: string, description: "rtsp:// or rtsps:// without credentials" }
+        sub_url: { type: string }
+        rtsp_transport: { type: string, enum: [tcp, udp], default: tcp }
+        audio: { type: string, enum: [auto, copy, aac, none], default: auto }
+        priority: { type: integer, minimum: 0, maximum: 10, default: 5 }
         dual_recording: { type: boolean }
         retention: { $ref: "#/components/schemas/CameraRetention" }
-        volume_ids: { type: array, items: { type: string } }
         username: { type: string, writeOnly: true }
         password: { type: string, writeOnly: true, format: password }
+    StreamTest:
+      type: object
+      properties:
+        ok: { type: boolean }
+        error: { type: string, enum: [auth_failed, not_found, unreachable, timeout, no_video, error] }
+        message: { type: string }
+        duration_ms: { type: integer }
+        streams:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string, enum: [video, audio, data] }
+              codec: { type: string }
+              profile: { type: string }
+              width: { type: integer }
+              height: { type: integer }
+              fps: { type: number }
+              sample_rate: { type: integer }
     CameraRetention:
       type: object
       properties:
