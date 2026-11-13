@@ -21,8 +21,10 @@ import (
 	"github.com/jdolan-exalink/openvms-rec/internal/cameras"
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
 	"github.com/jdolan-exalink/openvms-rec/internal/db"
+	"github.com/jdolan-exalink/openvms-rec/internal/events"
 	"github.com/jdolan-exalink/openvms-rec/internal/exports"
 	"github.com/jdolan-exalink/openvms-rec/internal/ingest"
+	"github.com/jdolan-exalink/openvms-rec/internal/onvif"
 	"github.com/jdolan-exalink/openvms-rec/internal/playback"
 	"github.com/jdolan-exalink/openvms-rec/internal/segments"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
@@ -48,6 +50,8 @@ type App struct {
 	// StorageInterval is how often volumes are inspected and retention runs.
 	StorageInterval time.Duration
 	Auth            *auth.Authenticator
+	// Events collects ONVIF events of cameras with events: onvif.
+	Events *events.Collector
 
 	mu      sync.Mutex
 	runCtx  context.Context
@@ -110,6 +114,7 @@ func New(ctx context.Context, cfg config.Config, prober volumes.Prober, log *slo
 		return nil, err
 	}
 	a.Cameras.OnChange = a.applyCamera
+	a.Events = &events.Collector{DB: d, Log: log, Transport: onvif.GuardedTransport(cfg.Discovery.CameraNetworks())}
 	mgr.Policy = CameraPolicy(cfg, a.Cameras.Get)
 	for _, e := range a.Cameras.List() {
 		recs, err := a.buildRecorders(e)
@@ -195,8 +200,12 @@ func (a *App) applyCamera(id string) {
 	}
 	e, ok := a.Cameras.Get(id)
 	if !ok {
+		a.Events.Apply(id, nil)
 		a.Log.Info("camera removed", "camera", id)
 		return
+	}
+	if a.runCtx != nil && a.runCtx.Err() == nil {
+		a.Events.Apply(id, a.eventTarget(e))
 	}
 	recs, err := a.buildRecorders(e)
 	if err != nil {
@@ -298,6 +307,9 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	nstreams := len(a.Recorders)
 	a.mu.Unlock()
+	for _, e := range a.Cameras.List() {
+		a.Events.Apply(e.ID, a.eventTarget(e))
+	}
 
 	srv := &http.Server{
 		Addr:              a.Cfg.Server.Listen,
@@ -317,6 +329,7 @@ func (a *App) Run(ctx context.Context) error {
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	srv.Shutdown(shutdown)
+	a.Events.StopAll()
 	a.wg.Wait() // recorders close their open segments cleanly
 	a.Storage.PersistAffinity(context.Background())
 	a.Log.Info("recorder stopped")
@@ -327,7 +340,7 @@ func (a *App) Run(ctx context.Context) error {
 func (a *App) Handler() http.Handler {
 	h := (&api.Server{Cfg: a.Cfg, DB: a.DB, Prober: a.Storage.Prober, Version: a.Version, Log: a.Log,
 		Storage: a.Storage, Streams: a.streams, Exports: a.Exports, Signer: a.Signer,
-		Cameras: a.Cameras, FFmpeg: a.Cfg.Recording.FFmpegPath}).Handler()
+		Cameras: a.Cameras, FFmpeg: a.Cfg.Recording.FFmpegPath, EventStatus: a.Events.Status}).Handler()
 	return api.SecurityHeaders(a.Auth.Middleware(h))
 }
 
@@ -353,6 +366,19 @@ func (a *App) streams() []api.StreamStatus {
 		})
 	}
 	return out
+}
+
+// eventTarget is the ONVIF event source of a camera, nil when it is
+// disabled or has events off.
+func (a *App) eventTarget(e cameras.Entry) *events.Target {
+	if !e.IsEnabled() || e.Events != config.EventsONVIF || e.DeviceURL() == "" {
+		return nil
+	}
+	t := &events.Target{CameraID: e.ID, DeviceURL: e.DeviceURL()}
+	if c, ok := a.Cameras.Credentials(e.ID); ok {
+		t.Username, t.Password = c.Username, c.Password
+	}
+	return t
 }
 
 // Close releases resources.

@@ -36,7 +36,9 @@ func TestNVRDetectAndImport(t *testing.T) {
 	cfg.Discovery.AllowedNetworks = []string{"127.0.0.0/8"}
 	s := &Server{Cfg: cfg, DB: d, Prober: fakeProber{}, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Cameras: reg,
 		NVRDetect: func(ctx context.Context, in provisionnvr.DetectInput) (*provisionnvr.Detection, error) {
-			in.ProbeONVIF = func(context.Context, provisionnvr.DetectInput) (*provisionnvr.OnvifFacts, error) { return nil, errors.New("off") }
+			in.ProbeONVIF = func(context.Context, provisionnvr.DetectInput) (*provisionnvr.OnvifFacts, error) {
+				return nil, errors.New("off")
+			}
 			in.ProbeRTSP = func(_ context.Context, _ string, _ int, _, _ string, ch int, st provisionnvr.Stream) (*provisionnvr.RTSPFacts, error) {
 				return &provisionnvr.RTSPFacts{Channel: ch, Stream: st, Codec: "H265"}, nil
 			}

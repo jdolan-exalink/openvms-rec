@@ -44,6 +44,10 @@ type EventNotification struct {
 	Topic     string            `json:"topic"`
 	Timestamp time.Time         `json:"timestamp"`
 	Data      map[string]string `json:"data"`
+	// Source identifies the emitter inside the device (VideoSourceToken, Rule...).
+	Source map[string]string `json:"source,omitempty"`
+	// PropertyOperation is Initialized, Changed or Deleted for property events.
+	PropertyOperation string `json:"property_operation,omitempty"`
 }
 
 func (e *EventsClient) GetEventProperties(ctx context.Context) (EventProperties, error) {
@@ -166,28 +170,43 @@ func (e *EventsClient) PullMessages(ctx context.Context, subEndpoint Endpoint, t
 		if !ok || start.Name.Local != "NotificationMessage" {
 			continue
 		}
+		// Spec shape: wsnt:Message > tt:Message(UtcTime, PropertyOperation) > tt:Source, tt:Data.
+		// Some devices drop the inner tt:Message; both are accepted.
+		type items struct {
+			SimpleItems []struct {
+				Name  string `xml:"Name,attr"`
+				Value string `xml:"Value,attr"`
+			} `xml:"SimpleItem"`
+		}
 		var msg struct {
 			Topic   string `xml:"Topic"`
 			Message struct {
-				UtcTime time.Time `xml:"UtcTime,attr"`
-				Data    struct {
-					SimpleItems []struct {
-						Name  string `xml:"Name,attr"`
-						Value string `xml:"Value,attr"`
-					} `xml:"SimpleItem"`
-				} `xml:"Data"`
+				UtcTime string `xml:"UtcTime,attr"`
+				Data    items  `xml:"Data"`
+				Inner   *struct {
+					UtcTime string `xml:"UtcTime,attr"`
+					Op      string `xml:"PropertyOperation,attr"`
+					Source  items  `xml:"Source"`
+					Data    items  `xml:"Data"`
+				} `xml:"Message"`
 			} `xml:"Message"`
 		}
 		if err := decoder.DecodeElement(&msg, &start); err == nil {
-			dataMap := make(map[string]string)
-			for _, item := range msg.Message.Data.SimpleItems {
-				dataMap[item.Name] = item.Value
+			n := EventNotification{Topic: strings.TrimSpace(msg.Topic), Data: map[string]string{}, Source: map[string]string{}}
+			stamp, data := msg.Message.UtcTime, msg.Message.Data
+			if in := msg.Message.Inner; in != nil {
+				stamp, data, n.PropertyOperation = in.UtcTime, in.Data, in.Op
+				for _, it := range in.Source.SimpleItems {
+					n.Source[it.Name] = it.Value
+				}
 			}
-			notifs = append(notifs, EventNotification{
-				Topic:     msg.Topic,
-				Timestamp: msg.Message.UtcTime,
-				Data:      dataMap,
-			})
+			for _, it := range data.SimpleItems {
+				n.Data[it.Name] = it.Value
+			}
+			if t, perr := time.Parse(time.RFC3339Nano, strings.TrimSpace(stamp)); perr == nil {
+				n.Timestamp = t.UTC()
+			}
+			notifs = append(notifs, n)
 		}
 	}
 

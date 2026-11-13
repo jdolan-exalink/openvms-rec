@@ -7,6 +7,7 @@ import (
 
 	"github.com/jdolan-exalink/openvms-rec/internal/cameras"
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
+	"github.com/jdolan-exalink/openvms-rec/internal/events"
 	"github.com/jdolan-exalink/openvms-rec/internal/ingest"
 	"github.com/jdolan-exalink/openvms-rec/internal/segments"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/volumes"
@@ -27,6 +28,9 @@ type CameraDTO struct {
 	DualRecording  bool                    `json:"dual_recording"`
 	Retention      *config.CameraRetention `json:"retention"`
 	HasCredentials bool                    `json:"has_credentials"`
+	ONVIFURL       string                  `json:"onvif_url,omitempty"`
+	Events         string                  `json:"events"`
+	EventsStatus   *events.Status          `json:"events_status,omitempty"`
 	Streams        []StreamStatus          `json:"streams"`
 }
 
@@ -43,9 +47,14 @@ func (s *Server) cameraDTO(e cameras.Entry, streams []StreamStatus) CameraDTO {
 	d := CameraDTO{ID: c.ID, Name: c.Name, Source: e.Source, Editable: e.Source == cameras.SourceAPI && s.Cameras != nil,
 		Enabled: c.IsEnabled(), MainURL: ingest.Redact(c.MainURL), Transport: t, Audio: a, Priority: c.Priority,
 		DualRecording: c.DualRecording || s.Cfg.Recording.DualRecording, Retention: c.Retention,
-		HasCredentials: c.CredentialsRef != "", Streams: []StreamStatus{}}
+		HasCredentials: c.CredentialsRef != "", ONVIFURL: c.ONVIFURL, Events: c.Events, Streams: []StreamStatus{}}
 	if c.SubURL != "" {
 		d.SubURL = ingest.Redact(c.SubURL)
+	}
+	if s.EventStatus != nil {
+		if st, ok := s.EventStatus(c.ID); ok {
+			d.EventsStatus = &st
+		}
 	}
 	for _, st := range streams {
 		if st.CameraID == c.ID {

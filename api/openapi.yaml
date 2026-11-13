@@ -207,6 +207,66 @@ paths:
         "422": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
         "502": { $ref: "#/components/responses/Error" }
+  /api/v1/nvrs/detect:
+    post:
+      tags: [cameras]
+      operationId: detectNVR
+      x-status: implemented
+      description: |
+        Reads a Provision-ISR recorder (TVT NVMS-9000 web API, read-only:
+        nothing on the recorder is changed): model, firmware, capability
+        matrix, channels with live state and their RTSP main/sub URLs. Host
+        must be inside discovery.allowed_networks. Importing a channel is an
+        ordinary POST /api/v1/cameras with those URLs and the recorder
+        credentials. 422 auth_failed / locked / unsupported / not_activated,
+        502 unreachable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [host, username]
+              properties:
+                host: { type: string }
+                port: { type: integer, description: "Web port; default 80 (443 with https)" }
+                https: { type: boolean }
+                username: { type: string, writeOnly: true }
+                password: { type: string, writeOnly: true, format: password }
+      responses:
+        "200":
+          description: Recorder
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  driver: { type: string, enum: [provision_nvr] }
+                  name: { type: string }
+                  model: { type: string }
+                  hardware: { type: string }
+                  firmware: { type: string }
+                  rtsp_port: { type: integer }
+                  rtsp_codec: { type: string }
+                  capabilities: { type: array, items: { $ref: "#/components/schemas/Capability" } }
+                  channels:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        number: { type: integer }
+                        name: { type: string }
+                        address: { type: string }
+                        model: { type: string }
+                        manufacturer: { type: string }
+                        online: { type: boolean }
+                        main_url: { type: string }
+                        sub_url: { type: string }
+                        camera_id: { type: string }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
   /api/v1/cameras/{id}:
     parameters: [{ $ref: "#/components/parameters/Id" }]
     get:
@@ -276,7 +336,12 @@ paths:
     get:
       tags: [recordings]
       operationId: listEvents
-      x-status: planned
+      x-status: implemented
+      description: |
+        Camera events in [from, to), newest first. Today only ONVIF PullPoint
+        events of cameras with events=onvif (source onvif_events). Events are
+        markers: recording is continuous regardless. next_cursor continues
+        the listing. raw carries the ONVIF topic, source and data items.
       responses:
         "200":
           description: Events
@@ -578,6 +643,15 @@ components:
         priority: { type: integer, minimum: 0, maximum: 10 }
         retention: { $ref: "#/components/schemas/CameraRetention" }
         has_credentials: { type: boolean, description: Credentials are write-only and never returned. }
+        onvif_url: { type: string, description: ONVIF device service; empty means http://<host of main_url>/onvif/device_service }
+        events: { type: string, enum: ["", onvif] }
+        events_status:
+          type: object
+          properties:
+            state: { type: string, enum: [connecting, subscribed, backoff, stopped] }
+            last_event: { type: string, format: date-time }
+            last_error: { type: string }
+            events: { type: integer, description: Events stored since the subscription loop started }
         streams: { type: array, items: { $ref: "#/components/schemas/StreamStatus" } }
     StreamStatus:
       type: object
@@ -598,6 +672,8 @@ components:
       type: object
       required: [main_url]
       properties:
+        onvif_url: { type: string, description: "ONVIF device service, http(s) without credentials" }
+        events: { type: string, enum: ["", onvif], description: onvif collects the camera's ONVIF events through PullPoint }
         id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,62}$", description: Required on create; immutable. }
         name: { type: string }
         enabled: { type: boolean, default: true }

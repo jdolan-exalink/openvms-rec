@@ -289,6 +289,16 @@
           "type": "string",
           "description": "Key under cameras: in the secrets file."
         },
+        "onvif_url": {
+          "type": "string",
+          "pattern": "^https?://[^@/]+(/.*)?$",
+          "description": "ONVIF device service URL without credentials. Default: http://<host of main_url>/onvif/device_service."
+        },
+        "events": {
+          "enum": ["", "onvif"],
+          "default": "",
+          "description": "onvif records the camera's ONVIF events (PullPoint)."
+        },
         "transport": {
           "enum": [
             "tcp",

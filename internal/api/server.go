@@ -16,6 +16,7 @@ import (
 
 	"github.com/jdolan-exalink/openvms-rec/internal/cameras"
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
+	"github.com/jdolan-exalink/openvms-rec/internal/events"
 	"github.com/jdolan-exalink/openvms-rec/internal/exports"
 	"github.com/jdolan-exalink/openvms-rec/internal/ingest"
 	"github.com/jdolan-exalink/openvms-rec/internal/onvif"
@@ -54,6 +55,8 @@ type Server struct {
 	ONVIFProbe func(ctx context.Context, ep onvif.Endpoint, username, password string) (onvif.ProbeResult, error)
 	// NVRDetect overrides provisionnvr.Detect in tests.
 	NVRDetect func(ctx context.Context, in provisionnvr.DetectInput) (*provisionnvr.Detection, error)
+	// EventStatus reports ONVIF event collection per camera (nil: none).
+	EventStatus func(cameraID string) (events.Status, bool)
 
 	staticOnce sync.Once
 	staticReg  *cameras.Registry
@@ -78,6 +81,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/cameras", s.listCameras)
 	mux.HandleFunc("GET /api/v1/cameras/{id}", s.getCamera)
 	mux.HandleFunc("GET /api/v1/cameras/{id}/recordings", s.recordings)
+	mux.HandleFunc("GET /api/v1/cameras/{id}/events", s.listEvents)
 	s.cameraAdminRoutes(mux)
 	s.onvifRoutes(mux)
 	s.nvrRoutes(mux)

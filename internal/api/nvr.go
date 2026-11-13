@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jdolan-exalink/openvms-rec/internal/onvif"
 	"github.com/jdolan-exalink/openvms-rec/internal/provisionnvr"
 )
 
@@ -121,7 +122,7 @@ func (s *Server) detectNVR(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	d, err := detect(ctx, provisionnvr.DetectInput{BaseURL: base, Username: req.Username, Password: req.Password, Transport: guardedTransport(s.cameraNetworks())})
+	d, err := detect(ctx, provisionnvr.DetectInput{BaseURL: base, Username: req.Username, Password: req.Password, Transport: onvif.GuardedTransport(s.cameraNetworks())})
 	audit := map[string]any{"host": ip, "driver": "provision_nvr"}
 	if err != nil {
 		class, _ := provisionnvr.ClassOf(err)

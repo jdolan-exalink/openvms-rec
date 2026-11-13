@@ -11,8 +11,10 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
@@ -80,6 +82,41 @@ func ProbeTransport() http.RoundTripper {
 		ResponseHeaderTimeout: probeOperationTimeout,
 		DialContext:           (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
 	}
+}
+
+// GuardedTransport is ProbeTransport restricted to nets: every connection,
+// including to service addresses reported by the device, must target an
+// address inside nets.
+func GuardedTransport(nets []netip.Prefix) http.RoundTripper {
+	t := ProbeTransport().(*http.Transport)
+	d := &net.Dialer{Timeout: 3 * time.Second}
+	t.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		a, err := netip.ParseAddr(host)
+		if err != nil {
+			ips, lerr := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
+			if lerr != nil || len(ips) == 0 {
+				return nil, fmt.Errorf("cannot resolve %q", host)
+			}
+			a = ips[0]
+		}
+		a = a.Unmap()
+		allowed := false
+		for _, p := range nets {
+			if p.Contains(a) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return nil, fmt.Errorf("%s is outside discovery.allowed_networks", a)
+		}
+		return d.DialContext(ctx, "tcp4", net.JoinHostPort(a.String(), port))
+	}
+	return t
 }
 
 // ErrProbeAuth is returned when the device rejects the credentials.

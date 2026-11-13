@@ -53,6 +53,7 @@ type ProbeResponse struct {
 	onvif.ProbeResult
 	Capabilities []ProbeCapabilityDTO `json:"capabilities"`
 	Suggested    SuggestedCamera      `json:"suggested"`
+	ONVIFURL     string               `json:"onvif_url"`
 	CameraID     string               `json:"camera_id,omitempty"`
 }
 
@@ -210,32 +211,6 @@ func (s *Server) probeEndpoint(ctx context.Context, req ProbeRequest) (onvif.End
 	return ep, a.String(), err
 }
 
-// guardedTransport refuses connections outside the allow-list, so service
-// addresses reported by the device cannot be used to reach other hosts.
-func guardedTransport(nets []netip.Prefix) http.RoundTripper {
-	t := onvif.ProbeTransport().(*http.Transport)
-	d := &net.Dialer{Timeout: 3 * time.Second}
-	t.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(address)
-		if err != nil {
-			return nil, err
-		}
-		a, err := netip.ParseAddr(host)
-		if err != nil {
-			ips, lerr := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
-			if lerr != nil || len(ips) == 0 {
-				return nil, fmt.Errorf("cannot resolve %q", host)
-			}
-			a = ips[0]
-		}
-		if !allowedAddr(nets, a) {
-			return nil, fmt.Errorf("%s is outside discovery.allowed_networks", a)
-		}
-		return d.DialContext(ctx, "tcp4", net.JoinHostPort(a.Unmap().String(), port))
-	}
-	return t
-}
-
 func (s *Server) probeCamera(w http.ResponseWriter, r *http.Request) {
 	var req ProbeRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
@@ -280,7 +255,7 @@ func (s *Server) probeCamera(w http.ResponseWriter, r *http.Request) {
 	if probe == nil {
 		nets := s.cameraNetworks()
 		probe = func(ctx context.Context, ep onvif.Endpoint, u, p string) (onvif.ProbeResult, error) {
-			return onvif.ProbeDevice(ctx, guardedTransport(nets), ep, u, p)
+			return onvif.ProbeDevice(ctx, onvif.GuardedTransport(nets), ep, u, p)
 		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -312,6 +287,7 @@ func (s *Server) probeCamera(w http.ResponseWriter, r *http.Request) {
 	} else {
 		name += " " + host
 	}
+	out.ONVIFURL = ep.String()
 	out.Suggested = SuggestedCamera{Name: name, MainURL: res.MainURL, SubURL: res.SubURL}
 	out.CameraID = s.cameraByHost()[host]
 	writeJSON(w, http.StatusOK, out)

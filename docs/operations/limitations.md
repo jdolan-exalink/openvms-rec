@@ -19,6 +19,8 @@ Actualizado con cada entrega. Última: **MVP — grabación, playback, export, U
 - Export: job idempotente, verifica SHA-256 de cada segmento fuente, retiene los segmentos con hold mientras dura, corta con `-c copy` al keyframe anterior al inicio pedido (el clip puede empezar hasta un GOP antes) y entrega ZIP con `video.mp4` + `manifest.json`. Descargas y exports quedan en `audit_log`.
 - API keys `ovr_…` (solo hash SHA-256 en archivo 0600), `X-API-Key` o `Bearer`, 429 tras 10 fallos/min por IP. `serve` no arranca fuera de loopback sin claves. `/metrics` Prometheus.
 - Búsqueda de cámaras en la LAN (WS-Discovery multicast en todas las interfaces más barrido unicast opcional de la subred, hasta /22) y "Leer por ONVIF": modelo, firmware, perfiles y URLs RTSP principal/secundaria completados solos. Solo lectura, sin tocar la configuración de la cámara; limitado a `discovery.allowed_networks` (por defecto redes privadas), incluidas las direcciones de servicio que informa el equipo. Requiere ONVIF habilitado en la cámara y un usuario con permiso ONVIF. Probado con un servidor ONVIF simulado; **sin prueba todavía contra una cámara real**.
+- Importación de canales de NVR Provision-ISR (TVT NVMS-9000): "Agregar NVR" lee el NVR (solo lectura, misma allow-list), muestra los canales con su estado y los da de alta como cámaras con el RTSP del NVR (`/chID=N&streamType=main|sub`). Código de openvms probado en un NVR8-16400AN real; en el Recorder, probado con el NVR simulado de openvms.
+- Eventos ONVIF por cámara (`events: onvif`): movimiento, persona/vehículo, cruce de línea, intrusión, sabotaje y patente cuando la cámara los informa por PullPoint, guardados como marcas sobre la grabación continua (`GET /api/v1/cameras/{id}/events`, marcas y lista en Grabaciones). "Leer por ONVIF" lo activa si la cámara responde GetEventProperties.
 - Alta, edición y baja de cámaras desde la UI/API, con botón "Probar conexión" (códecs, resolución, error de clave/ruta/red). Los cambios se aplican en caliente: solo se reinicia la grabación de esa cámara. Las cámaras del YAML se muestran como solo lectura. Una cámara con grabaciones no se puede borrar, solo deshabilitar.
 - UI web mínima en español (panel, cámaras, timeline, reproducción, export, almacenamiento), verificada con Chromium headless.
 - `backup DEST` (copia consistente de SQLite con `VACUUM INTO`).
@@ -27,8 +29,10 @@ Actualizado con cada entrega. Última: **MVP — grabación, playback, export, U
 ## No implementado todavía
 
 - Alta/edición de volúmenes por API/UI (hoy: archivo YAML).
-- ONVIF: solo lectura para el alta (descubrimiento, info del equipo, perfiles y URLs RTSP). Faltan eventos (PullPoint), PTZ, cambio de códec desde la UI, drivers propietarios, microSD/Profile G.
-- Importar canales de un NVR Provision-ISR (existe en openvms, `internal/provisionnvr`, todavía no copiado).
+- ONVIF: faltan PTZ, cambio de códec desde la UI, drivers propietarios y microSD/Profile G.
+- Eventos ONVIF: suscripción PullPoint que se recrea cada 4 minutos (no usa Renew ni Unsubscribe; la cámara descarta la anterior al vencer). Sin snapshots, bounding boxes ni zonas. No se reciben eventos de canales de un NVR (habría que suscribirse al NVR). Probado con un servidor ONVIF simulado; **sin prueba contra una cámara real**: el tipo de evento sale del tópico y puede quedar como `onvif` genérico.
+- LPR y analíticas que las cámaras Provision envían por HTTP POST (receptor de openvms `agent/provisionlpr`): no traído. El push se configura a mano en la web de la cámara y el formato real del evento LPR nunca se capturó.
+- NVR Provision-ISR: solo importación de canales para grabarlos por RTSP. No se usa la grabación ni la reproducción del NVR.
 - El cliente ONVIF autentica con WS-Security (UsernameToken digest). No hace HTTP Digest: un equipo que solo acepte HTTP Digest en ONVIF aparece como `auth_failed`.
 - Snapshots/miniaturas y vista en vivo en la UI; la reproducción usa HLS nativo del navegador (Safari/Chromium recientes). En Firefox la UI ofrece la URL para VLC.
 - Las credenciales de cámaras agregadas por la UI se guardan en texto plano en `<data.dir>/camera-credentials.yaml`, protegido solo por permisos (0600 en Linux, ACL del directorio de datos en Windows). No hay cifrado en reposo.

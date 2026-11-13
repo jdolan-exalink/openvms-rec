@@ -57,6 +57,8 @@ type Input struct {
 	Retention     *config.CameraRetention `json:"retention"`
 	Username      *string                 `json:"username"`
 	Password      *string                 `json:"password"`
+	ONVIFURL      string                  `json:"onvif_url"`
+	Events        string                  `json:"events"`
 }
 
 // Registry holds all cameras. Safe for concurrent use.
@@ -99,7 +101,7 @@ func Open(ctx context.Context, o Options) (*Registry, error) {
 	}
 	r.creds = creds
 	rows, err := o.DB.QueryContext(ctx, `SELECT id, name, enabled, stream_main_url, stream_sub_url, credentials_ref,
-		rtsp_transport, audio, dual_recording, priority, retention_main_days, retention_sub_days, retention_min_days FROM cameras`)
+		rtsp_transport, audio, dual_recording, priority, retention_main_days, retention_sub_days, retention_min_days, onvif_url, events FROM cameras`)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +111,7 @@ func Open(ctx context.Context, o Options) (*Registry, error) {
 		var enabled bool
 		var main, sub, min sql.NullInt64
 		if err := rows.Scan(&c.ID, &c.Name, &enabled, &c.MainURL, &c.SubURL, &c.CredentialsRef, &c.Transport, &c.Audio,
-			&c.DualRecording, &c.Priority, &main, &sub, &min); err != nil {
+			&c.DualRecording, &c.Priority, &main, &sub, &min, &c.ONVIFURL, &c.Events); err != nil {
 			return nil, err
 		}
 		c.Enabled = &enabled
@@ -198,7 +200,7 @@ func (r *Registry) Credentials(id string) (config.Credentials, bool) {
 func (r *Registry) build(id string, in Input) (config.Camera, error) {
 	c := config.Camera{ID: id, Name: strings.TrimSpace(in.Name), Enabled: in.Enabled, MainURL: strings.TrimSpace(in.MainURL),
 		SubURL: strings.TrimSpace(in.SubURL), Transport: in.Transport, Audio: in.Audio, Priority: 5,
-		DualRecording: in.DualRecording, Retention: in.Retention}
+		DualRecording: in.DualRecording, Retention: in.Retention, ONVIFURL: strings.TrimSpace(in.ONVIFURL), Events: in.Events}
 	if in.Priority != nil {
 		c.Priority = *in.Priority
 	}
@@ -272,15 +274,17 @@ func (r *Registry) save(ctx context.Context, c config.Camera, create bool) error
 	now := r.now().UnixMilli()
 	if create {
 		_, err := r.db.ExecContext(ctx, `INSERT INTO cameras (id, name, enabled, stream_main_url, stream_sub_url, credentials_ref,
-			rtsp_transport, audio, dual_recording, priority, retention_main_days, retention_sub_days, retention_min_days, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			c.ID, c.Name, c.IsEnabled(), c.MainURL, c.SubURL, c.CredentialsRef, c.Transport, c.Audio, c.DualRecording, c.Priority, main, sub, min, now, now)
+			rtsp_transport, audio, dual_recording, priority, retention_main_days, retention_sub_days, retention_min_days, onvif_url, events, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			c.ID, c.Name, c.IsEnabled(), c.MainURL, c.SubURL, c.CredentialsRef, c.Transport, c.Audio, c.DualRecording, c.Priority, main, sub, min,
+			c.ONVIFURL, c.Events, now, now)
 		return err
 	}
 	_, err := r.db.ExecContext(ctx, `UPDATE cameras SET name=?, enabled=?, stream_main_url=?, stream_sub_url=?, credentials_ref=?,
-		rtsp_transport=?, audio=?, dual_recording=?, priority=?, retention_main_days=?, retention_sub_days=?, retention_min_days=?, updated_at=?
+		rtsp_transport=?, audio=?, dual_recording=?, priority=?, retention_main_days=?, retention_sub_days=?, retention_min_days=?,
+		onvif_url=?, events=?, updated_at=?
 		WHERE id=?`, c.Name, c.IsEnabled(), c.MainURL, c.SubURL, c.CredentialsRef, c.Transport, c.Audio, c.DualRecording, c.Priority,
-		main, sub, min, now, c.ID)
+		main, sub, min, c.ONVIFURL, c.Events, now, c.ID)
 	return err
 }
 

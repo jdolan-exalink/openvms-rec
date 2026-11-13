@@ -1,6 +1,7 @@
 // Package onvif is a bounded ONVIF client. Copied from jdolan-exalink/openvms
 // (internal/onvif, 2026-11-13, commit 6723888) with the owner's permission;
-// probe.go and lan.go are Recorder additions.
+// probe.go and lan.go are Recorder additions; events.go PullMessages
+// parsing was fixed for the spec shape (nested tt:Message).
 package onvif
 
 import (

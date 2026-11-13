@@ -146,7 +146,7 @@ async function cams() {
   ${c.items.map(x => `<tr><td><b>${esc(x.name || x.id)}</b><div class="muted small">${esc(x.id)}</div></td>
     <td class="small">${x.source === "api" ? "UI / API" : "archivo YAML"}</td>
     <td class="small"><code>${esc(x.main_url)}</code>${x.has_credentials ? `<div class="muted">con credenciales</div>` : ""}</td>
-    <td>${x.streams.length ? x.streams.map(s => pill(s.state)).join(" ") : pill(x.enabled ? "stopped" : "disabled")}</td>
+    <td>${x.streams.length ? x.streams.map(s => pill(s.state)).join(" ") : pill(x.enabled ? "stopped" : "disabled")}${x.events_status ? `<div class="small ${x.events_status.state === "subscribed" ? "s-healthy" : "warn"}" title="${esc(x.events_status.last_error || "")}">eventos: ${esc(EVSTATE[x.events_status.state] || x.events_status.state)}${x.events_status.events ? " · " + x.events_status.events : ""}</div>` : ""}</td>
     <td>${x.editable ? `<button class="b" data-edit="${esc(x.id)}">Editar</button> <button class="b" data-del="${esc(x.id)}">Eliminar</button>` : `<span class="muted small">editar en recorder.yaml</span>`}</td></tr>`).join("")}
   </table></div>
   <div class="card"><h2>Estado de grabación</h2>${camTable(c.items)}</div>`;
@@ -164,6 +164,7 @@ async function cams() {
 // Credentials typed during this page session, reused for the next camera of the
 // same site. Kept in memory only: never stored in the browser.
 let lastCreds = {username: "", password: ""};
+const EVSTATE = {connecting: "conectando", subscribed: "suscripto", backoff: "reintentando", stopped: "detenido"};
 const VIA = {multicast: "multicast ONVIF", sweep: "barrido de subred"};
 async function discover(sweep) {
   const d = $("#disc");
@@ -276,6 +277,7 @@ function camForm(cam, seed) {
       <label class="small">Prioridad <input id="f-prio" type="number" min="0" max="10" value="${v.priority}" style="width:64px"></label>
       <label class="small"><input id="f-en" type="checkbox" ${v.enabled ? "checked" : ""}> Grabar</label>
       <label class="small"><input id="f-dual" type="checkbox" ${v.dual_recording ? "checked" : ""}> Grabar también la secundaria</label>
+      <label class="small" title="Movimiento y analíticas que la cámara informa por ONVIF, como marcas en la línea de tiempo"><input id="f-ev" type="checkbox" ${v.events === "onvif" ? "checked" : ""}> Registrar eventos ONVIF</label>
     </div>
     <p class="muted small">Sin usuario ni contraseña en la URL: van en sus campos y se guardan en un archivo del servidor que solo puede leer el servicio, y nunca se vuelven a mostrar.${edit && v.has_credentials ? " Para quitar las credenciales escribí un espacio en Usuario." : ""}</p>
     <div class="row"><button class="b" id="f-test">Probar conexión</button><button class="b primary" id="f-save">${edit ? "Guardar" : "Crear y grabar"}</button><button class="b" id="f-cancel">Cancelar</button></div>
@@ -285,7 +287,7 @@ function camForm(cam, seed) {
     if (seed.name) $("#f-name").value = seed.name;
     if (lastCreds.username) { $("#f-user").value = lastCreds.username; $("#f-pass").value = lastCreds.password; }
   }
-  let xaddr = seed ? seed.xaddr : "";
+  let xaddr = seed ? seed.xaddr : "", onvifURL = v.onvif_url || "";
   $("#f-host").oninput = () => { xaddr = ""; };
   $("#f-onvif").onclick = async () => {
     const r = $("#f-onvif-res"), host = $("#f-host").value.trim();
@@ -296,6 +298,8 @@ function camForm(cam, seed) {
       const p = await api("/api/v1/cameras/probe", {method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify(Object.assign(xaddr ? {xaddr} : {host, onvif_port: +$("#f-oport").value || 80}, edit ? {camera_id: v.id} : {}, c))});
       if (c.username) lastCreds = {username: c.username, password: c.password || ""};
+      if (p.onvif_url) onvifURL = p.onvif_url;
+      if (!edit && p.capabilities.some(x => x.capability === "onvif.events.properties" && x.status === "confirmed")) $("#f-ev").checked = true;
       if (p.suggested.main_url) $("#f-main").value = p.suggested.main_url;
       if (p.suggested.sub_url) $("#f-sub").value = p.suggested.sub_url;
       if (!$("#f-name").value.trim() || (seed && $("#f-name").value === seed.name)) $("#f-name").value = p.suggested.name;
@@ -336,6 +340,7 @@ function camForm(cam, seed) {
   $("#f-save").onclick = async () => {
     const r = $("#f-res");
     const body = Object.assign({name: $("#f-name").value, main_url: $("#f-main").value.trim(), sub_url: $("#f-sub").value.trim(),
+      onvif_url: onvifURL, events: $("#f-ev").checked ? "onvif" : "",
       rtsp_transport: $("#f-tr").value, audio: $("#f-audio").value, priority: +$("#f-prio").value,
       enabled: $("#f-en").checked, dual_recording: $("#f-dual").checked}, creds());
     if (!edit) body.id = $("#f-id").value.trim();
@@ -346,6 +351,7 @@ function camForm(cam, seed) {
     } catch (e) { r.innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
   };
 }
+const EVTYPE = {motion: "movimiento", person: "persona", vehicle: "vehículo", lpr: "patente", face: "rostro", line_crossing: "cruce de línea", intrusion: "intrusión", tamper: "sabotaje", onvif: "evento ONVIF"};
 const PROBE = {auth_failed: "usuario o contraseña rechazados", not_found: "la cámara no tiene esa ruta de stream", unreachable: "no se puede conectar (IP o puerto)", timeout: "la cámara no respondió a tiempo", no_video: "el stream no tiene video"};
 
 async function storage() {
@@ -390,8 +396,9 @@ async function rec() {
       <label class="small muted">hasta</label><input type="datetime-local" id="to" value="${toLocalInput(now)}">
       <button class="b" id="load">Ver</button>
     </div>
-    <div class="legend small muted"><span><i style="background:var(--rec)"></i>grabado</span><span><i style="background:var(--na)"></i>en volumen no disponible</span><span><i style="background:var(--gap)"></i>hueco registrado</span><span>Clic en la barra para reproducir desde ese momento.</span></div>
+    <div class="legend small muted"><span><i style="background:var(--rec)"></i>grabado</span><span><i style="background:var(--na)"></i>en volumen no disponible</span><span><i style="background:var(--gap)"></i>hueco registrado</span><span><i style="background:var(--warn)"></i>evento</span><span>Clic en la barra para reproducir desde ese momento.</span></div>
     <svg class="tl" id="tl"></svg><div class="row small muted" id="tlx"></div>
+    <div id="evl" class="small"></div>
   </div>
   <div class="card"><h2>Reproducción</h2><video id="vid" controls playsinline></video><p class="small muted" id="pinfo">Elegí un momento en la línea de tiempo.</p></div>
   <div class="card"><h2>Exportar evidencia</h2>
@@ -406,11 +413,16 @@ let tlRange;
 async function loadTL() {
   const cam = $("#cam").value, f = new Date($("#from").value), t = new Date($("#to").value);
   tlRange = {cam, f, t};
-  const d = await api(`/api/v1/cameras/${encodeURIComponent(cam)}/recordings?from=${f.toISOString()}&to=${t.toISOString()}`);
+  const q = `from=${f.toISOString()}&to=${t.toISOString()}`;
+  const [d, ev] = await Promise.all([api(`/api/v1/cameras/${encodeURIComponent(cam)}/recordings?${q}`),
+    api(`/api/v1/cameras/${encodeURIComponent(cam)}/events?${q}&limit=500`).catch(() => ({items: []}))]);
   const W = 1000, span = t - f, x = v => Math.max(0, Math.min(W, (new Date(v) - f) / span * W));
   const parts = [`<rect x="0" y="8" width="${W}" height="32" fill="var(--bg)" stroke="var(--line)"/>`];
   for (const i of d.intervals) parts.push(`<rect x="${x(i.start)}" y="8" width="${Math.max(1, x(i.end) - x(i.start))}" height="32" fill="${i.available ? "var(--rec)" : "var(--na)"}"><title>${esc(fmtT(i.start))} → ${esc(fmtT(i.end))} · ${i.segments} segmentos · ${esc(i.volume_ids.join(", "))}</title></rect>`);
   for (const g of d.gaps) parts.push(`<rect x="${x(g.start)}" y="40" width="${Math.max(2, x(g.end || t) - x(g.start))}" height="6" fill="var(--gap)"><title>hueco: ${esc(g.reason)} ${esc(fmtT(g.start))}</title></rect>`);
+  for (const e of ev.items) parts.push(`<rect x="${x(e.timestamp_utc)}" y="2" width="2" height="6" fill="var(--warn)"><title>${esc(EVTYPE[e.type] || e.type)}${e.class ? " " + esc(e.class) : ""} · ${esc(fmtT(e.timestamp_utc))}</title></rect>`);
+  $("#evl").innerHTML = ev.items.length ? `<details><summary class="muted">Eventos de la cámara (${ev.items.length}${ev.next_cursor ? "+" : ""})</summary><table><tr><th>Hora</th><th>Evento</th><th>Detalle</th><th></th></tr>${ev.items.slice(0, 200).map((e, i) => `<tr><td>${esc(fmtT(e.timestamp_utc))}</td><td>${esc(EVTYPE[e.type] || e.type)}</td><td class="muted">${esc(e.class || (e.raw && e.raw.topic) || "")}</td><td><button class="b" data-ev="${i}">Ver</button></td></tr>`).join("")}</table></details>` : "";
+  $("#evl").querySelectorAll("[data-ev]").forEach(b => b.onclick = () => play(new Date(new Date(ev.items[+b.dataset.ev].timestamp_utc).getTime() - 5e3)));
   const svg = $("#tl"); svg.setAttribute("viewBox", `0 0 ${W} 56`); svg.setAttribute("preserveAspectRatio", "none"); svg.innerHTML = parts.join("");
   $("#tlx").textContent = `${fmtT(f)} — ${fmtT(t)} · ${d.intervals.length} intervalos · ${d.gaps.length} huecos`;
   svg.onclick = ev => { const r = svg.getBoundingClientRect(); play(new Date(f.getTime() + (ev.clientX - r.left) / r.width * span)); };

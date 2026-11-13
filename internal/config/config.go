@@ -68,6 +68,27 @@ type Camera struct {
 	Priority       int              `yaml:"priority"`
 	DualRecording  bool             `yaml:"dual_recording"`
 	Retention      *CameraRetention `yaml:"retention"`
+	// ONVIFURL is the device service (http://host/onvif/device_service),
+	// without credentials. Empty: derived from the host of main_url.
+	ONVIFURL string `yaml:"onvif_url"`
+	// Events is "onvif" to record the camera's ONVIF events, empty for none.
+	Events string `yaml:"events"`
+}
+
+// EventsONVIF turns on ONVIF event collection for a camera.
+const EventsONVIF = "onvif"
+
+// DeviceURL returns the ONVIF device service of the camera: onvif_url, or
+// http://<host of main_url>/onvif/device_service.
+func (cam Camera) DeviceURL() string {
+	if cam.ONVIFURL != "" {
+		return cam.ONVIFURL
+	}
+	u, err := url.Parse(cam.MainURL)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	return "http://" + u.Hostname() + "/onvif/device_service"
 }
 
 // CameraRetention overrides global retention days for one camera.
@@ -97,6 +118,15 @@ func (cam Camera) Validate(globalDual bool) []string {
 		case u.User != nil:
 			out = append(out, f.name+": must not contain credentials; use credentials_ref and the secrets file")
 		}
+	}
+	if cam.ONVIFURL != "" {
+		u, err := url.Parse(cam.ONVIFURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil {
+			out = append(out, "onvif_url: must be http(s)://host[:port]/path without credentials")
+		}
+	}
+	if cam.Events != "" && cam.Events != EventsONVIF {
+		out = append(out, "events: must be empty or onvif")
 	}
 	if cam.Transport != "" && cam.Transport != "tcp" && cam.Transport != "udp" {
 		out = append(out, "transport: must be tcp or udp")

@@ -65,6 +65,8 @@ recovery:
 discovery:
   allowed_networks: []
 
+# Per camera: events: onvif records ONVIF events (motion, analytics) as
+# markers; onvif_url defaults to http://<host of main_url>/onvif/device_service.
 # Cameras. URLs never carry credentials: they come from data.secrets_file:
 #   cameras:
 #     lab-door: {username: viewer, password: "..."}
