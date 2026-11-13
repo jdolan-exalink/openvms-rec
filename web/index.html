@@ -58,6 +58,7 @@ video{width:100%;max-height:60vh;background:#000;border-radius:6px}
   </div>
 </template>
 
+<script src="/hls.min.js"></script>
 <script>
 "use strict";
 const $ = (s, el = document) => el.querySelector(s);
@@ -296,11 +297,14 @@ async function rec() {
     <div class="legend small muted"><span><i style="background:var(--rec)"></i>grabado</span><span><i style="background:var(--na)"></i>en volumen no disponible</span><span><i style="background:var(--gap)"></i>hueco registrado</span><span>Clic en la barra para reproducir desde ese momento.</span></div>
     <svg class="tl" id="tl"></svg><div class="row small muted" id="tlx"></div>
   </div>
-  <div class="card"><h2>Reproducción</h2><video id="vid" controls playsinline></video><p class="small muted" id="pinfo">Elegí un momento en la línea de tiempo.</p></div>
+  <div class="card"><h2>Reproducción</h2><video id="vid" controls playsinline></video>
+    <div class="row small" style="margin-top:8px"><label><input type="checkbox" id="compat"> Modo compatible</label><span class="muted">convierte a H.264 solo para ver, si el navegador no reproduce HEVC (usa CPU del servidor; la grabación no cambia)</span></div>
+    <p class="small muted" id="pinfo">Elegí un momento en la línea de tiempo.</p></div>
   <div class="card"><h2>Exportar evidencia</h2>
     <div class="row"><label class="small muted">desde</label><input type="datetime-local" id="ef"><label class="small muted">hasta</label><input type="datetime-local" id="et"><button class="b primary" id="exp">Exportar MP4</button></div>
     <p class="small muted">Se remuxa sin recodificar. El inicio se ajusta al keyframe anterior. El ZIP incluye manifest.json con SHA-256 del video y de cada segmento de origen verificado.</p>
     <div id="estat" class="small"></div></div>`;
+  $("#compat").checked = !hevcOK;
   $("#load").onclick = loadTL; $("#exp").onclick = doExport;
   await loadTL();
 }
@@ -320,17 +324,37 @@ async function loadTL() {
   $("#ef").value = toLocalInput(new Date(t - 10 * 60e3)); $("#et").value = toLocalInput(t);
 }
 
+// HEVC (H.265) decoding depends on browser and GPU; H.264 works everywhere.
+const hevcOK = (() => {
+  const c = 'video/mp4; codecs="hvc1.1.6.L150.B0"';
+  try { return !!(window.MediaSource && MediaSource.isTypeSupported(c)) || document.createElement("video").canPlayType(c) === "probably"; } catch { return false; }
+})();
+let hls;
 async function play(at) {
   const from = new Date(at.getTime() - 5e3), to = new Date(at.getTime() + 30 * 60e3);
-  const p = await api(`/api/v1/cameras/${encodeURIComponent(tlRange.cam)}/playback?from=${from.toISOString()}&to=${to.toISOString()}`, {method: "POST"});
+  const compat = $("#compat").checked;
+  const p = await api(`/api/v1/cameras/${encodeURIComponent(tlRange.cam)}/playback?from=${from.toISOString()}&to=${to.toISOString()}${compat ? "&compat=1" : ""}`, {method: "POST"});
   const url = location.origin + p.url, v = $("#vid");
-  if (v.canPlayType("application/vnd.apple.mpegurl")) {
+  if (hls) { hls.destroy(); hls = null; }
+  const info = `Desde ${fmtT(from)} · enlace válido hasta ${fmtT(p.expires_at)}${p.compat ? " · modo compatible (H.264)" : ""}`;
+  if (window.Hls && Hls.isSupported()) {
+    hls = new Hls({maxBufferLength: 30});
+    hls.on(Hls.Events.ERROR, (_, d) => {
+      if (!d.fatal) return;
+      $("#pinfo").innerHTML = `<span class="bad">No se pudo reproducir${d.details ? " (" + esc(d.details) + ")" : ""}.</span>${!p.compat ? " Probá con <b>Modo compatible</b>." : ""}`;
+      hls.destroy(); hls = null;
+    });
+    hls.loadSource(url); hls.attachMedia(v);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
+    $("#pinfo").textContent = info;
+  } else if (v.canPlayType("application/vnd.apple.mpegurl")) {
     v.src = url; v.play().catch(() => {});
-    $("#pinfo").textContent = `Desde ${fmtT(from)} · enlace válido hasta ${fmtT(p.expires_at)}`;
+    $("#pinfo").textContent = info;
   } else {
     v.removeAttribute("src");
-    $("#pinfo").innerHTML = `Este navegador no reproduce HLS de forma nativa. Abrí este enlace en VLC (válido hasta ${esc(fmtT(p.expires_at))}):<br><code>${esc(url)}</code>`;
+    $("#pinfo").innerHTML = `Este navegador no reproduce HLS. Abrí este enlace en VLC (válido hasta ${esc(fmtT(p.expires_at))}):<br><code>${esc(url)}</code>`;
   }
+  v.onerror = () => { if (!p.compat) $("#pinfo").innerHTML = `<span class="bad">El navegador no pudo decodificar el video.</span> Probá con <b>Modo compatible</b>.`; };
 }
 
 async function doExport() {

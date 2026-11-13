@@ -15,6 +15,7 @@ Actualizado con cada entrega. Última: **MVP — grabación, playback, export, U
 - Reconexión exponencial con jitter, gaps explícitos (`stream_lost`, `no_volume`, `recorder_stopped`, `recorder_down`), conmutación a otro volumen ante error de disco (ST-04), reconciliación tras `kill -9`/corte de energía.
 - Audio: copia si el contenedor lo admite; G.711 se detecta y se transcodifica solo el audio a AAC (video siempre copiado).
 - Monitor de almacenamiento cada 30 s con probe de escritura y retención automática dentro de `serve`.
+- Reproducción en el navegador con hls.js embebido (Chrome, Edge, Firefox) o HLS nativo (Safari). Si el navegador no decodifica HEVC, el "Modo compatible" convierte cada segmento a H.264 720p al vuelo solo para ver (máximo 2 a la vez; usa CPU del servidor). Grabación y export no cambian.
 - Playback HLS de los segmentos TS sin transcodificar, con `EXT-X-DISCONTINUITY` en los gaps y tokens HMAC de 15 min. La clave se genera al arrancar: los tokens no sobreviven un reinicio.
 - Export: job idempotente, verifica SHA-256 de cada segmento fuente, retiene los segmentos con hold mientras dura, corta con `-c copy` al keyframe anterior al inicio pedido (el clip puede empezar hasta un GOP antes) y entrega ZIP con `video.mp4` + `manifest.json`. Descargas y exports quedan en `audit_log`.
 - API keys `ovr_…` (solo hash SHA-256 en archivo 0600), `X-API-Key` o `Bearer`, 429 tras 10 fallos/min por IP. `serve` no arranca fuera de loopback sin claves. `/metrics` Prometheus.

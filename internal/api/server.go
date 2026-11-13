@@ -54,6 +54,8 @@ type Server struct {
 	Logs    *sysinfo.Ring
 
 	samplerOnce sync.Once
+	compatOnce  sync.Once
+	compat      chan struct{}
 	staticOnce  sync.Once
 	staticReg   *cameras.Registry
 	probeOnce   sync.Once
@@ -67,6 +69,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health/ready", s.ready)
 	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("GET /{$}", s.ui)
+	mux.HandleFunc("GET /hls.min.js", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write(web.HLSJS)
+	})
 	mux.HandleFunc("GET /api/v1/system/capabilities", s.capabilities)
 	mux.HandleFunc("GET /api/v1/storage", s.storageSummary)
 	mux.HandleFunc("GET /api/v1/storage/volumes", s.listVolumes)

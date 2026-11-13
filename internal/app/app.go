@@ -93,7 +93,7 @@ func New(ctx context.Context, cfg config.Config, prober volumes.Prober, log *slo
 		return nil, fmt.Errorf("refusing to listen on %s without API keys: create one with `openvms-recorder apikey create NAME` and set server.api_keys_file", cfg.Server.Listen)
 	}
 	a.Auth = &auth.Authenticator{Keys: keys, Public: func(p string) bool {
-		return p == "/" || strings.HasPrefix(p, "/health/") || strings.HasPrefix(p, "/api/v1/playback/")
+		return p == "/" || p == "/hls.min.js" || strings.HasPrefix(p, "/health/") || strings.HasPrefix(p, "/api/v1/playback/")
 	}}
 	a.Signer, err = playback.NewSigner()
 	if err != nil {

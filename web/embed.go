@@ -7,3 +7,9 @@ import _ "embed"
 
 //go:embed index.html
 var Index []byte
+
+// HLSJS is hls.js 1.6.13 (Apache-2.0, see hls.LICENSE), used where the
+// browser has no native HLS (Chrome, Firefox, Edge on Windows).
+//
+//go:embed hls.min.js
+var HLSJS []byte

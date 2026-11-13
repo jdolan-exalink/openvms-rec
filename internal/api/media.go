@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jdolan-exalink/openvms-rec/internal/exports"
@@ -60,10 +61,12 @@ func (s *Server) createPlayback(w http.ResponseWriter, r *http.Request) {
 		rep = "main"
 	}
 	exp := s.now().Add(playbackTTL).UTC()
-	tok := s.Signer.Sign(playback.Grant{CameraID: id, Representation: rep, From: from, To: to, Expires: exp})
+	compat := r.URL.Query().Get("compat") == "1" && s.FFmpeg != ""
+	tok := s.Signer.Sign(playback.Grant{CameraID: id, Representation: rep, From: from, To: to, Expires: exp, Compat: compat})
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"url":        "/api/v1/playback/" + tok + "/index.m3u8",
 		"expires_at": exp,
+		"compat":     compat,
 	})
 }
 
@@ -138,6 +141,10 @@ func (s *Server) segment(w http.ResponseWriter, r *http.Request) {
 	defer f.Close()
 	w.Header().Set("Content-Type", "video/mp2t")
 	w.Header().Set("Cache-Control", "private, max-age=3600")
+	if g.Compat && strings.HasPrefix(sg.Codec, "h265") {
+		s.transcodeSegment(w, r, f.Name())
+		return
+	}
 	http.ServeContent(w, r, "", sg.End, f)
 }
 

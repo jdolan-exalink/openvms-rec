@@ -336,8 +336,11 @@ paths:
       description: |
         Returns a short-lived (15 min) HLS URL for the range. Segments are served as recorded (MPEG-TS,
         no transcoding); gaps become EXT-X-DISCONTINUITY. H.265 plays only where the browser supports it.
+        With compat=1, H.265 segments are converted on the fly to H.264 (720p max, audio copied) for
+        viewing only; at most 2 conversions run at once. Recordings and exports are never modified.
       parameters:
         - { name: representation, in: query, schema: { type: string, enum: [main, sub], default: main } }
+        - { name: compat, in: query, schema: { type: string, enum: ["1"] }, description: Convert H.265 to H.264 for browsers without HEVC }
       responses:
         "201":
           description: Playback session

@@ -26,6 +26,9 @@ type Grant struct {
 	From           time.Time `json:"f"`
 	To             time.Time `json:"t"`
 	Expires        time.Time `json:"e"`
+	// Compat asks for H.264 when the browser cannot decode the recorded
+	// codec (HEVC); segments are converted on the fly, only for viewing.
+	Compat bool `json:"x,omitempty"`
 }
 
 // Signer issues and verifies tokens with an HMAC key.
