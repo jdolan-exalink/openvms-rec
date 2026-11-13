@@ -20,6 +20,7 @@ import (
 	"github.com/jdolan-exalink/openvms-rec/internal/ingest"
 	"github.com/jdolan-exalink/openvms-rec/internal/onvif"
 	"github.com/jdolan-exalink/openvms-rec/internal/playback"
+	"github.com/jdolan-exalink/openvms-rec/internal/provisionnvr"
 	"github.com/jdolan-exalink/openvms-rec/internal/segments"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage/health"
@@ -51,6 +52,8 @@ type Server struct {
 	// Discover and ONVIFProbe override LAN discovery and the ONVIF probe in tests.
 	Discover   func(ctx context.Context, opts onvif.LANOptions) ([]onvif.LANDevice, []onvif.LANInterface, error)
 	ONVIFProbe func(ctx context.Context, ep onvif.Endpoint, username, password string) (onvif.ProbeResult, error)
+	// NVRDetect overrides provisionnvr.Detect in tests.
+	NVRDetect func(ctx context.Context, in provisionnvr.DetectInput) (*provisionnvr.Detection, error)
 
 	staticOnce sync.Once
 	staticReg  *cameras.Registry
@@ -77,6 +80,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/cameras/{id}/recordings", s.recordings)
 	s.cameraAdminRoutes(mux)
 	s.onvifRoutes(mux)
+	s.nvrRoutes(mux)
 	s.mediaRoutes(mux)
 	return mux
 }

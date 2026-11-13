@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response cmdId="" cmdUrl="querySystemCaps">
+	<status>success</status>
+	<content>
+		<chlMaxCount>16</chlMaxCount>
+		<analogChlCount>0</analogChlCount>
+		<switchableIpChlMaxCount>0</switchableIpChlMaxCount>
+		<poeChlMaxCount>0</poeChlMaxCount>
+		<ipChlMaxCount>16</ipChlMaxCount>
+		<previewMaxWin>16</previewMaxWin>
+		<playbackMaxWin>16</playbackMaxWin>
+		<totalBandwidth unit="Mb">96</totalBandwidth>
+		<usedTotalBandwidth unit="Kb">21504</usedTotalBandwidth>
+		<usedAutoBandwidth unit="Kb">21504</usedAutoBandwidth>
+		<usedManualBandwidth unit="Kb">21504</usedManualBandwidth>
+		<supportTalk>true</supportTalk>
+		<audioInNum>0</audioInNum>
+		<supportPlatform>true</supportPlatform>
+		<chlSupSignalType></chlSupSignalType>
+		<supportLite>false</supportLite>
+		<supportSHDB>false</supportSHDB>
+		<supportVideoType>PAL,NTSC</supportVideoType>
+		<mainStreamLimitFps>1</mainStreamLimitFps>
+		<supportPIR>false</supportPIR>
+		<supportRecorder>true</supportRecorder>
+		<supportImageRotate>false</supportImageRotate>
+		<supportWaterMark>false</supportWaterMark>
+		<supportFTP>true</supportFTP>
+		<supportPOS>true</supportPOS>
+		<supportHideNoVideoSignal>true</supportHideNoVideoSignal>
+		<supportRaid>false</supportRaid>
+		<supportSoftRaid>false</supportSoftRaid>
+		<supportModifyPoeMode>false</supportModifyPoeMode>
+		<supportPoePowerManage>false</supportPoePowerManage>
+		<supportFishEye>false</supportFishEye>
+		<FishEyeCaps>
+			<fishEyeMode>
+				<group installType="Top,Floor">
+					<enum>FISHEYE_ORIGNAL</enum>
+					<enum>2x180</enum>
+					<enum>FISH_3PTZ</enum>
+					<enum>FISH_4PTZ</enum>
+					<enum>FISH_8PTZ</enum>
+				</group>
+				<group installType="Wall">
+					<enum>FISHEYE_ORIGNAL</enum>
+					<enum>180</enum>
+					<enum>180_3PTZ</enum>
+					<enum>180_4PTZ</enum>
+					<enum>180_8PTZ</enum>
+				</group>
+			</fishEyeMode>
+			<installType>
+				<enum>Top</enum>
+				<enum>Wall</enum>
+				<enum>Floor</enum>
+			</installType>
+		</FishEyeCaps>
+		<supportLogoSetting>false</supportLogoSetting>
+		<supportSnmp>true</supportSnmp>
+		<supportCloudUpgrade>true</supportCloudUpgrade>
+		<showVideoLossMessage>false</showVideoLossMessage>
+		<showNat>true</showNat>
+		<showApp>false</showApp>
+		<showGDPR>true</showGDPR>
+		<showCloudUpgrade>true</showCloudUpgrade>
+		<supportOriginalDisplay>true</supportOriginalDisplay>
+		<supportPwdSecurityConfig>true</supportPwdSecurityConfig>
+		<supportCheckPointProtection>true</supportCheckPointProtection>
+		<supportHttpsConfig>true</supportHttpsConfig>
+		<supportAlarmServerConfig>true</supportAlarmServerConfig>
+		<supportChlTalk>true</supportChlTalk>
+		<supportZeroOprAdd>false</supportZeroOprAdd>
+		<supportFaceMatch>false</supportFaceMatch>
+		<localFaceDectMaxCount>0</localFaceDectMaxCount>
+		<localTargetDectMaxCount>0</localTargetDectMaxCount>
+		<faceMatchMaxCount>0</faceMatchMaxCount>
+		<showAIReourceDetail>false</showAIReourceDetail>
+		<supportLocalFaceDetection>false</supportLocalFaceDetection>
+		<supportToeConfig>false</supportToeConfig>
+		<IntelAndFaceConfigHide>false</IntelAndFaceConfigHide>
+		<supportAlarmAudioConfig>false</supportAlarmAudioConfig>
+		<supportPtzGroupAndTrace>false</supportPtzGroupAndTrace>
+		<faceMatchLimitMaxChlNum>0</faceMatchLimitMaxChlNum>
+		<supportPlateMatch>true</supportPlateMatch>
+		<apiServerVerityType>normal</apiServerVerityType>
+		<apiServerSwitchEditable>true</apiServerSwitchEditable>
+		<showNatCloseTip>true</showNatCloseTip>
+		<showNatServerAddress>true</showNatServerAddress>
+		<showNatVisitAddress>true</showNatVisitAddress>
+		<RecordSubResAdaptive>true</RecordSubResAdaptive>
+		<supportParkingLotLEDVisible>false</supportParkingLotLEDVisible>
+		<outputScreens>
+			<item index="0" isMain="true"></item>
+		</outputScreens>
+		<supportBootWorkMode>false</supportBootWorkMode>
+	</content>
+</response>

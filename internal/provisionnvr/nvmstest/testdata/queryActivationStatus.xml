@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response cmdId="" cmdUrl="queryActivationStatus">
+	<status>success</status>
+	<content>
+		<activated>true</activated>
+	</content>
+</response>

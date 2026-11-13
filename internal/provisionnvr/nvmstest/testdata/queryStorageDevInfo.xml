@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response version="1.0" cmdId="" cmdUrl="queryStorageDevInfo">
+	<status>success</status>
+	<types>
+		<raidType>
+			<enum>RAID_TYPE_0</enum>
+			<enum>RAID_TYPE_1</enum>
+			<enum>RAID_TYPE_5</enum>
+			<enum>RAID_TYPE_6</enum>
+			<enum>RAID_TYPE_10</enum>
+		</raidType>
+		<raidStripeSize>
+			<enum>512KB</enum>
+			<enum>1024KB</enum>
+		</raidStripeSize>
+		<slotHomePosition>
+			<enum>leftTop</enum>
+			<enum>rightTop</enum>
+			<enum>rightBottom</enum>
+			<enum>leftBottom</enum>
+		</slotHomePosition>
+		<increaseDirection>
+			<enum>up</enum>
+			<enum>right</enum>
+			<enum>down</enum>
+			<enum>left</enum>
+		</increaseDirection>
+		<diskInterfaceType>
+			<enum>sata</enum>
+			<enum>esata</enum>
+			<enum>hotplug</enum>
+			<enum>removable</enum>
+		</diskInterfaceType>
+	</types>
+	<content>
+		<cycleRecord>true</cycleRecord>
+		<storageSysInfo>
+			<raidNameMaxLen>16</raidNameMaxLen>
+			<supportedRaidType type="list">
+				<item>RAID_TYPE_0</item>
+				<item>RAID_TYPE_1</item>
+				<item>RAID_TYPE_5</item>
+				<item>RAID_TYPE_6</item>
+				<item>RAID_TYPE_10</item>
+			</supportedRaidType>
+			<supportedRaidStripeSize type="list">
+				<item>128KB</item>
+				<item>256KB</item>
+				<item>1024KB</item>
+			</supportedRaidStripeSize>
+			<maxDiskCountInOneRaid>16</maxDiskCountInOneRaid>
+			<slotHomePosition></slotHomePosition>
+			<slotIncreaseDirection></slotIncreaseDirection>
+			<raidSwitch>false</raidSwitch>
+		</storageSysInfo>
+		<raidCardList type="list"></raidCardList>
+		<enclosureList type="list"></enclosureList>
+		<raidList type="list">
+			<itemType>
+				<raidType type="raidType"></raidType>
+				<raidStripeSize type="raidStripeSize"></raidStripeSize>
+				<realSize unit="MB"></realSize>
+			</itemType>
+		</raidList>
+		<diskList type="list">
+			<itemType>
+				<size unit="MB"></size>
+			</itemType>
+			<item id="{11111111-2222-3333-4444-555555555555}">
+				<raidId>{00000000-0000-0000-0000-000000000000}</raidId>
+				<slotIndex>1</slotIndex>
+				<diskInterfaceType>sata</diskInterfaceType>
+				<serialNum>SERIAL-REDACTED</serialNum>
+				<model>WDC WD20EARZ-00C5XB0</model>
+				<size>1907729</size>
+				<freeSpace>0</freeSpace>
+				<recStartDate>2026-04-06</recStartDate>
+				<recEndDate>2026-10-27</recEndDate>
+			</item>
+		</diskList>
+	</content>
+</response>

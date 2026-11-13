@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response version="1.0" cmdId="" cmdUrl="queryChlRecLog">
+	<status>success</status>
+	<types>
+		<recType>
+			<enum>MOTION</enum>
+			<enum>SCHEDULE</enum>
+			<enum>SENSOR</enum>
+			<enum>MANUAL</enum>
+			<enum>INTELLIGENT</enum>
+			<enum>POS</enum>
+			<enum>NORMALALL</enum>
+		</recType>
+		<modeTypes>
+			<enum>modeOne</enum>
+			<enum>modeTwo</enum>
+		</modeTypes>
+	</types>
+	<content>
+		<chl id="{00000007-0000-0000-0000-000000000000}">Cámara IP 01</chl>
+		<modeType type="modeTypes">modeOne</modeType>
+		<recList type="list" timeZone="UTC">
+			<itemType>
+				<recType type="recType"></recType>
+			</itemType>
+			<item>
+				<recType>MOTION</recType>
+				<startTime>2026-10-28 08:45:49</startTime>
+				<endTime>2026-10-28 08:46:21</endTime>
+				<size>1</size>
+			</item>
+			<item>
+				<recType>MOTION</recType>
+				<startTime>2026-10-28 10:27:41</startTime>
+				<endTime>2026-10-28 10:28:18</endTime>
+				<size>1</size>
+			</item>
+			<item>
+				<recType>SCHEDULE</recType>
+				<startTime>2026-10-28 10:31:22</startTime>
+				<endTime>2026-10-28 10:31:57</endTime>
+				<size>1</size>
+			</item>
+		</recList>
+	</content>
+</response>

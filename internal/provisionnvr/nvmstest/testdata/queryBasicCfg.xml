@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response clientType="WEB" cmdId="" cmdUrl="queryBasicCfg">
+	<status>success</status>
+	<content>
+		<deviceNumber>1</deviceNumber>
+		<name>Test Recorder</name>
+		<productModel>NVR8-16400AN(1U)</productModel>
+		<TVTProductModel>TD-3116H2-B1</TVTProductModel>
+		<defaultUser>
+			<item type="superAdmin" password="DIGEST-REDACTED">admin</item>
+		</defaultUser>
+		<sn>SERIAL-REDACTED</sn>
+		<softwareVersion><![CDATA[1.4.7.61583B230726.N0S.U2(16A820)]]></softwareVersion>
+		<launchDate>20230726.1730</launchDate>
+	</content>
+</response>

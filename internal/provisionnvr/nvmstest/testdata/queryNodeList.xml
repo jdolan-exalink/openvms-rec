@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response cmdId="" cmdUrl="queryNodeList">
+	<status>success</status>
+	<content type="list" total="7">
+		<item id="{00000001-0000-0000-0000-000000000000}">
+			<name>Cámara IP 07</name>
+			<devDesc>Cámara IP 07</devDesc>
+			<devID>{00000001-0000-0000-0000-000000000000}</devID>
+			<ip>192.0.2.7</ip>
+			<port>9008</port>
+			<userName>admin</userName>
+			<productModel factoryName="Provision ISR">DI-320IPSN-VF-V2</productModel>
+			<manufacturer>TVT</manufacturer>
+			<protocolType>TVT_IPCAMERA</protocolType>
+			<AccessType>0</AccessType>
+			<presetCount>0</presetCount>
+			<cruiseCount>0</cruiseCount>
+			<groupCruiseCount>0</groupCruiseCount>
+			<traceCount>0</traceCount>
+			<taskItemCount>0</taskItemCount>
+			<addType>normal</addType>
+			<chlType>digital</chlType>
+			<winIndex>0</winIndex>
+		</item>
+		<item id="{00000007-0000-0000-0000-000000000000}">
+			<name>Cámara IP 01</name>
+			<devDesc>Cámara IP 01</devDesc>
+			<devID>{00000007-0000-0000-0000-000000000000}</devID>
+			<ip>192.0.2.1</ip>
+			<port>9008</port>
+			<userName>admin</userName>
+			<productModel factoryName="Provision ISR">DI-320IPSN-VF-V2</productModel>
+			<manufacturer>TVT</manufacturer>
+			<protocolType>TVT_IPCAMERA</protocolType>
+			<AccessType>0</AccessType>
+			<presetCount>0</presetCount>
+			<cruiseCount>0</cruiseCount>
+			<groupCruiseCount>0</groupCruiseCount>
+			<traceCount>0</traceCount>
+			<taskItemCount>0</taskItemCount>
+			<addType>normal</addType>
+			<chlType>digital</chlType>
+			<winIndex>6</winIndex>
+		</item>
+		<item id="{00000008-0000-0000-0000-000000000000}">
+			<name>Cámara IP 02</name>
+			<devDesc>Cámara IP 02</devDesc>
+			<devID>{00000008-0000-0000-0000-000000000000}</devID>
+			<ip>192.0.2.2</ip>
+			<port>9008</port>
+			<userName>admin</userName>
+			<productModel factoryName="Provision ISR">DI-320IPSN-VF-V2</productModel>
+			<manufacturer>TVT</manufacturer>
+			<protocolType>TVT_IPCAMERA</protocolType>
+			<AccessType>0</AccessType>
+			<presetCount>0</presetCount>
+			<cruiseCount>0</cruiseCount>
+			<groupCruiseCount>0</groupCruiseCount>
+			<traceCount>0</traceCount>
+			<taskItemCount>0</taskItemCount>
+			<addType>normal</addType>
+			<chlType>digital</chlType>
+			<winIndex>7</winIndex>
+		</item>
+		<item id="{00000009-0000-0000-0000-000000000000}">
+			<name>Cámara IP 03</name>
+			<devDesc>Cámara IP 03</devDesc>
+			<devID>{00000009-0000-0000-0000-000000000000}</devID>
+			<ip>192.0.2.3</ip>
+			<port>9008</port>
+			<userName>admin</userName>
+			<productModel factoryName="Provision ISR">DI-320IPSN-VF-V2</productModel>
+			<manufacturer>TVT</manufacturer>
+			<protocolType>TVT_IPCAMERA</protocolType>
+			<AccessType>0</AccessType>
+			<presetCount>0</presetCount>
+			<cruiseCount>0</cruiseCount>
+			<groupCruiseCount>0</groupCruiseCount>
+			<traceCount>0</traceCount>
+			<taskItemCount>0</taskItemCount>
+			<addType>normal</addType>
+			<chlType>digital</chlType>
+			<winIndex>8</winIndex>
+		</item>
+		<item id="{0000000A-0000-0000-0000-000000000000}">
+			<name>Cámara IP 04</name>
+			<devDesc>Cámara IP 04</devDesc>
+			<devID>{0000000A-0000-0000-0000-000000000000}</devID>
+			<ip>192.0.2.4</ip>
+			<port>9008</port>
+			<userName>admin</userName>
+			<productModel factoryName="Provision ISR">DI-320IPSN-VF-V2</productModel>
+			<manufacturer>TVT</manufacturer>
+			<protocolType>TVT_IPCAMERA</protocolType>
+			<AccessType>0</AccessType>
+			<presetCount>0</presetCount>
+			<cruiseCount>0</cruiseCount>
+			<groupCruiseCount>0</groupCruiseCount>
+			<traceCount>0</traceCount>
+			<taskItemCount>0</taskItemCount>
+			<addType>normal</addType>
+			<chlType>digital</chlType>
+			<winIndex>9</winIndex>
+		</item>
+		<item id="{0000000B-0000-0000-0000-000000000000}">
+			<name>Cámara IP 05</name>
+			<devDesc>Cámara IP 05</devDesc>
+			<devID>{0000000B-0000-0000-0000-000000000000}</devID>
+			<ip>192.0.2.5</ip>
+			<port>9008</port>
+			<userName>admin</userName>
+			<productModel factoryName="Provision ISR">DI-320IPSN-VF-V2</productModel>
+			<manufacturer>TVT</manufacturer>
+			<protocolType>TVT_IPCAMERA</protocolType>
+			<AccessType>0</AccessType>
+			<presetCount>0</presetCount>
+			<cruiseCount>0</cruiseCount>
+			<groupCruiseCount>0</groupCruiseCount>
+			<traceCount>0</traceCount>
+			<taskItemCount>0</taskItemCount>
+			<addType>normal</addType>
+			<chlType>digital</chlType>
+			<winIndex>10</winIndex>
+		</item>
+		<item id="{0000000C-0000-0000-0000-000000000000}">
+			<name>Cámara IP 06</name>
+			<devDesc>Cámara IP 06</devDesc>
+			<devID>{0000000C-0000-0000-0000-000000000000}</devID>
+			<ip>192.0.2.6</ip>
+			<port>9008</port>
+			<userName>admin</userName>
+			<productModel factoryName="Provision ISR">DI-320IPSN-VF-V2</productModel>
+			<manufacturer>TVT</manufacturer>
+			<protocolType>TVT_IPCAMERA</protocolType>
+			<AccessType>0</AccessType>
+			<presetCount>0</presetCount>
+			<cruiseCount>0</cruiseCount>
+			<groupCruiseCount>0</groupCruiseCount>
+			<traceCount>0</traceCount>
+			<taskItemCount>0</taskItemCount>
+			<addType>normal</addType>
+			<chlType>digital</chlType>
+			<winIndex>11</winIndex>
+		</item>
+	</content>
+</response>

@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response version="1.0" cmdId="" cmdUrl="queryChlStatus">
+	<status>success</status>
+	<types>
+		<motionStatus>
+			<enum>alarming</enum>
+			<enum>noAlarming</enum>
+			<enum>noSupport</enum>
+			<enum>off</enum>
+		</motionStatus>
+		<intelligentStatus>
+			<enum>oscAlarming</enum>
+			<enum>peaAlarming</enum>
+			<enum>tripwireAlarming</enum>
+			<enum>avdAlarming</enum>
+			<enum>vfdAlarming</enum>
+			<enum>noAlarming</enum>
+			<enum>noSupport</enum>
+			<enum>off</enum>
+			<enum>cpcAlarming</enum>
+			<enum>ipdAlarming</enum>
+			<enum>cddAlarming</enum>
+			<enum>faceMatchAlarming</enum>
+			<enum>plateMatchAlarming</enum>
+		</intelligentStatus>
+		<recStatus>
+			<enum>recording</enum>
+			<enum>noRecording</enum>
+			<enum>off</enum>
+			<enum>recordingAbnormal</enum>
+		</recStatus>
+	</types>
+	<content type="list">
+		<itemType>
+			<motionStatus type="motionStatus"></motionStatus>
+			<intelligentStatus type="intelligentStatus"></intelligentStatus>
+			<recStatus type="recStatus"></recStatus>
+		</itemType>
+		<item>
+			<chl id="{00000001-0000-0000-0000-000000000000}">Cámara IP 07</chl>
+			<online>true</online>
+			<motionStatus>noAlarming</motionStatus>
+			<intelligentStatus>noAlarming</intelligentStatus>
+			<recStatus>noRecording</recStatus>
+		</item>
+		<item>
+			<chl id="{00000007-0000-0000-0000-000000000000}">Cámara IP 01</chl>
+			<online>true</online>
+			<motionStatus>alarming</motionStatus>
+			<intelligentStatus>noAlarming</intelligentStatus>
+			<recStatus>recording</recStatus>
+		</item>
+		<item>
+			<chl id="{00000008-0000-0000-0000-000000000000}">Cámara IP 02</chl>
+			<online>true</online>
+			<motionStatus>alarming</motionStatus>
+			<intelligentStatus>noAlarming</intelligentStatus>
+			<recStatus>recording</recStatus>
+		</item>
+		<item>
+			<chl id="{00000009-0000-0000-0000-000000000000}">Cámara IP 03</chl>
+			<online>true</online>
+			<motionStatus>noAlarming</motionStatus>
+			<intelligentStatus>noAlarming</intelligentStatus>
+			<recStatus>recording</recStatus>
+		</item>
+		<item>
+			<chl id="{0000000A-0000-0000-0000-000000000000}">Cámara IP 04</chl>
+			<online>true</online>
+			<motionStatus>alarming</motionStatus>
+			<intelligentStatus>noAlarming</intelligentStatus>
+			<recStatus>recording</recStatus>
+		</item>
+		<item>
+			<chl id="{0000000B-0000-0000-0000-000000000000}">Cámara IP 05</chl>
+			<online>true</online>
+			<motionStatus>noAlarming</motionStatus>
+			<intelligentStatus>noAlarming</intelligentStatus>
+			<recStatus>noRecording</recStatus>
+		</item>
+		<item>
+			<chl id="{0000000C-0000-0000-0000-000000000000}">Cámara IP 06</chl>
+			<online>true</online>
+			<motionStatus>noAlarming</motionStatus>
+			<intelligentStatus>noAlarming</intelligentStatus>
+			<recStatus>noRecording</recStatus>
+		</item>
+	</content>
+</response>

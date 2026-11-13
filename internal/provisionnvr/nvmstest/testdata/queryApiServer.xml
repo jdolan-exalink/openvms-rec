@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response cmdId="" cmdUrl="queryApiServer">
+	<status>success</status>
+	<types>
+		<authenticationType>
+			<enum>Basic</enum>
+			<enum>Digest</enum>
+		</authenticationType>
+	</types>
+	<content>
+		<apiserverSwitch>false</apiserverSwitch>
+		<authenticationType>Digest</authenticationType>
+	</content>
+</response>

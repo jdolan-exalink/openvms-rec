@@ -138,7 +138,7 @@ function camTable(items) {
 
 async function cams() {
   const c = await api("/api/v1/cameras");
-  $("#main").innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Cámaras</h2><span class="row" style="margin:0"><label class="small" title="Además del multicast ONVIF, consulta una por una las IP de la subred (sirve cuando el multicast no llega)"><input id="sweep" type="checkbox" checked> barrer la subred</label><button class="b" id="find">Buscar cámaras</button><button class="b primary" id="add">Agregar a mano</button></span></div>
+  $("#main").innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Cámaras</h2><span class="row" style="margin:0"><label class="small" title="Además del multicast ONVIF, consulta una por una las IP de la subred (sirve cuando el multicast no llega)"><input id="sweep" type="checkbox" checked> barrer la subred</label><button class="b" id="find">Buscar cámaras</button><button class="b" id="addnvr">Agregar NVR</button><button class="b primary" id="add">Agregar a mano</button></span></div>
   <div id="disc"></div>
   <div id="form"></div>
   <p class="muted small">Las capacidades de cada cámara (ONVIF, Profile G, microSD, analíticas) se informan solo con evidencia de pruebas reales; ninguna está confirmada todavía.</p>
@@ -152,6 +152,7 @@ async function cams() {
   <div class="card"><h2>Estado de grabación</h2>${camTable(c.items)}</div>`;
   $("#add").onclick = () => camForm();
   $("#find").onclick = () => discover($("#sweep").checked);
+  $("#addnvr").onclick = () => nvrForm();
   document.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => camForm(c.items.find(x => x.id === b.dataset.edit)));
   document.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
     if (!confirm(`¿Eliminar la cámara ${b.dataset.del}? Si ya tiene grabaciones no se puede: deshabilitala.`)) return;
@@ -185,6 +186,62 @@ async function discover(sweep) {
     });
   } catch (e) { d.innerHTML = `<div class="card" style="background:var(--bg)"><p class="bad">No se pudo buscar: ${esc(e.message)}</p></div>`; }
 }
+function nvrForm() {
+  const f = $("#form");
+  f.innerHTML = `<div class="card" style="background:var(--bg)"><h2>Importar canales de un NVR Provision-ISR</h2>
+    <p class="muted small">NVR con plataforma TVT NVMS-9000 (probado en NVR8-16400AN). Solo lectura: no se cambia nada en el NVR. Cada canal elegido se graba como una cámara, con el RTSP del NVR.</p>
+    <div class="row">
+      <label class="small">IP del NVR <input id="n-host" placeholder="192.168.1.20" style="width:150px"></label>
+      <label class="small">Puerto web <input id="n-port" type="number" min="1" max="65535" value="80" style="width:80px"></label>
+      <label class="small"><input id="n-https" type="checkbox"> HTTPS</label>
+      <label class="small">Usuario <input id="n-user" autocomplete="off" value="${esc(lastCreds.username)}" style="width:120px"></label>
+      <label class="small">Contraseña <input id="n-pass" type="password" autocomplete="new-password" style="width:140px"></label>
+      <button class="b primary" id="n-read">Leer NVR</button><button class="b" id="n-cancel">Cancelar</button>
+    </div>
+    <div id="n-res" class="small"></div></div>`;
+  $("#n-cancel").onclick = () => { f.innerHTML = ""; };
+  $("#n-read").onclick = async () => {
+    const r = $("#n-res"), host = $("#n-host").value.trim(), user = $("#n-user").value.trim(), pass = $("#n-pass").value;
+    if (!host || !user) { r.innerHTML = `<span class="bad">Escribí la IP y el usuario del NVR</span>`; return; }
+    r.textContent = "Leyendo el NVR…";
+    let d;
+    try {
+      d = await api("/api/v1/nvrs/detect", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({host, port: +$("#n-port").value || 0, https: $("#n-https").checked, username: user, password: pass})});
+    } catch (e) { r.innerHTML = `<span class="bad">✗ ${esc(NVRERR[e.code] || e.message)}</span>`; return; }
+    lastCreds = {username: user, password: pass};
+    const oct = host.split(".").pop();
+    r.innerHTML = `<div class="s-healthy">✓ ${esc(d.name || "NVR")} · ${esc(d.model)}${d.firmware ? " · firmware " + esc(d.firmware) : ""}${d.rtsp_codec ? " · video " + esc(d.rtsp_codec) : ""}</div>
+      ${d.rtsp_port ? "" : `<div class="bad">El servidor RTSP del NVR está apagado: activalo en el NVR para poder grabar sus canales.</div>`}
+      <details><summary class="muted">Capacidades (${d.capabilities.length})</summary>${d.capabilities.map(x => `<div>${esc(x.capability)}: <b>${esc(CAPSTATE[x.status] || x.status)}</b> <span class="muted">${esc(x.evidence || "")}</span></div>`).join("")}</details>
+      <table><tr><th></th><th>Canal</th><th>Nombre de la cámara</th><th>Cámara en el NVR</th><th>Estado</th></tr>
+      ${d.channels.map((c, i) => `<tr><td>${c.camera_id ? "" : c.main_url ? `<input type="checkbox" data-ch="${i}" ${c.online === false ? "" : "checked"}>` : ""}</td>
+        <td>${c.number || "—"}</td>
+        <td>${c.camera_id ? `<span class="muted">ya agregado como <b>${esc(c.camera_id)}</b></span>` : `<input data-name="${i}" value="${esc(c.name || "Canal " + c.number)}" style="width:100%">`}</td>
+        <td class="small">${esc([c.manufacturer, c.model].filter(Boolean).join(" ") || "—")}<div class="muted">${esc(c.address || "")}</div></td>
+        <td>${c.online === undefined ? "—" : c.online ? `<span class="pill s-healthy">en línea</span>` : `<span class="pill s-stopped">sin conexión</span>`}</td></tr>`).join("")}</table>
+      <div class="row" style="margin-top:8px"><button class="b primary" id="n-import">Agregar los elegidos</button><span id="n-out"></span></div>`;
+    $("#n-import").onclick = async () => {
+      const out = [];
+      for (const cb of r.querySelectorAll("[data-ch]:checked")) {
+        const c = d.channels[+cb.dataset.ch], name = r.querySelector(`[data-name="${cb.dataset.ch}"]`).value.trim();
+        const id = slug(`nvr-${oct}-ch${c.number}`);
+        try {
+          await api("/api/v1/cameras", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({
+            id, name: name || `Canal ${c.number}`, main_url: c.main_url, sub_url: c.sub_url, rtsp_transport: "tcp", audio: "auto",
+            enabled: true, priority: 5, username: user, password: pass})});
+          out.push(`<span class="s-healthy">✓ ${esc(id)}</span>`);
+        } catch (e) { out.push(`<span class="bad">✗ ${esc(id)}: ${esc(e.message)}</span>`); }
+      }
+      if (!out.length) { $("#n-out").innerHTML = `<span class="muted">No elegiste ningún canal</span>`; return; }
+      const ok = !out.some(x => x.includes("bad"));
+      if (ok) { cams(); } else { $("#n-out").innerHTML = out.join(" "); }
+    };
+  };
+}
+const NVRERR = {auth_failed: "el NVR rechazó el usuario o la contraseña", locked: "el NVR bloqueó la cuenta por intentos fallidos; esperá unos minutos",
+  unsupported: "el equipo no es un NVR Provision-ISR / TVT NVMS-9000", not_activated: "el NVR no está activado: terminá su configuración inicial",
+  unreachable: "el NVR no respondió en esa IP y puerto", busy: "hay otra prueba en curso; reintentá en unos segundos"};
 const slug = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63);
 const ONVIFERR = {auth_failed: "la cámara rechazó el usuario o la contraseña (revisá también que ONVIF esté habilitado y que el usuario tenga permiso ONVIF)",
   probe_failed: "la cámara no respondió por ONVIF en esa IP y puerto (¿ONVIF deshabilitado o puerto distinto de 80?)", busy: "hay otra prueba en curso; reintentá en unos segundos"};

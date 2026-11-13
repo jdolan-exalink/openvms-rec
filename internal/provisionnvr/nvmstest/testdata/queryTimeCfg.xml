@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response cmdId="" cmdUrl="queryTimeCfg">
+	<status>success</status>
+	<types>
+		<synchronizeType>
+			<enum>manually</enum>
+			<enum>NTP</enum>
+		</synchronizeType>
+		<dateFormat>
+			<enum>year-month-day</enum>
+			<enum>month-day-year</enum>
+			<enum>day-month-year</enum>
+		</dateFormat>
+		<timeFormat>
+			<enum>12</enum>
+			<enum>24</enum>
+		</timeFormat>
+	</types>
+	<content>
+		<timezoneInfo>
+			<timeZone>ART3</timeZone>
+			<daylightSwitch>false</daylightSwitch>
+		</timezoneInfo>
+		<synchronizeInfo>
+			<type type="synchronizeType">manually</type>
+			<ntpServer>time.example.invalid</ntpServer>
+			<currentTime><![CDATA[28/10/2026 08:40:08]]></currentTime>
+		</synchronizeInfo>
+		<formatInfo>
+			<date type="dateFormat">day-month-year</date>
+			<time type="timeFormat">24</time>
+		</formatInfo>
+	</content>
+</response>

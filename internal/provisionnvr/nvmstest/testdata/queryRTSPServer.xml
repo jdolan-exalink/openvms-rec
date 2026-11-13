@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<response cmdId="" cmdUrl="queryRTSPServer">
+	<status>success</status>
+	<types>
+		<authenticationType>
+			<enum>Basic</enum>
+			<enum>Digest</enum>
+		</authenticationType>
+	</types>
+	<content>
+		<rtspServerSwitch>true</rtspServerSwitch>
+		<rtspPort>554</rtspPort>
+		<anonymousAccess>false</anonymousAccess>
+		<rtspAuthType>Digest</rtspAuthType>
+	</content>
+</response>
