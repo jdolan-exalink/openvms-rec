@@ -59,7 +59,7 @@ func newEnv(t *testing.T, ids ...string) env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, sp := range mgr.Specs {
+	for _, sp := range mgr.Specs() {
 		if _, err := volumes.Initialize(fakeProber{}, sp, time.Now()); err != nil {
 			t.Fatal(err)
 		}

@@ -14,6 +14,8 @@ type VolumeDTO struct {
 	MountPoint  string   `json:"mount_point"`
 	FSType      string   `json:"fs_type"`
 	Enabled     bool     `json:"enabled"`
+	Source      string   `json:"source,omitempty"`   // config | api
+	Editable    bool     `json:"editable,omitempty"` // API volumes only
 	State       string   `json:"state"`
 	Reason      string   `json:"state_reason,omitempty"`
 	Writable    bool     `json:"writable"`

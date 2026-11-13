@@ -80,6 +80,10 @@ func New(ctx context.Context, cfg config.Config, prober volumes.Prober, log *slo
 		d.Close()
 		return nil, err
 	}
+	if err := mgr.LoadVolumes(ctx, d); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("load volumes: %w", err)
+	}
 	a := &App{Cfg: cfg, DB: d, Store: store, Storage: mgr, Recorders: map[string]*ingest.Recorder{},
 		Log: log, Version: version, StorageInterval: 30 * time.Second, running: map[string]*runningStream{}, Sampler: sysinfo.NewSampler()}
 
@@ -312,7 +316,7 @@ func (a *App) Run(ctx context.Context) error {
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	a.Log.Info("recorder started", "listen", a.Cfg.Server.Listen, "version", a.Version,
-		"volumes", len(a.Storage.Specs), "streams", nstreams)
+		"volumes", len(a.Storage.Specs()), "streams", nstreams)
 
 	var err error
 	select {

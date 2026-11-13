@@ -447,27 +447,45 @@ paths:
     post:
       tags: [storage]
       operationId: createVolume
-      x-status: planned
-      description: Add a volume from the UI. Volumes are configuration-file managed in this build.
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      x-status: implemented
+      description: |
+        Add a volume from the UI/API. It is stored in the recorder database
+        (`source: api`); volumes of recorder.yaml stay read-only. The root must
+        be an absolute path that does not overlap another volume. With
+        `initialize: true` the folder is created if missing and the volume
+        marker is written; a non-empty folder without marker is refused
+        (`volume_not_empty`) and nothing is saved. Disks are never formatted.
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: "#/components/schemas/VolumeCreate" } } }
       responses:
         "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Volume" } } } }
         "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
   /api/v1/storage/volumes/{id}:
     parameters: [{ $ref: "#/components/parameters/Id" }]
     patch:
       tags: [storage]
       operationId: updateVolume
-      x-status: planned
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      x-status: implemented
+      description: Edit limits and flags of an API volume (PUT is accepted as an alias). The root path cannot change; configuration-file volumes answer `volume_read_only`.
       requestBody:
         required: true
         content: { application/merge-patch+json: { schema: { $ref: "#/components/schemas/VolumePatch" } } }
       responses:
         "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Volume" } } } }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [storage]
+      operationId: deleteVolume
+      x-status: implemented
+      description: Remove an API volume from the list. Files on disk are left untouched. Refused with `volume_has_recordings` while segments are indexed on it (disable it instead).
+      responses:
+        "204": { description: Removed }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/storage/volumes/{id}/validate:
     parameters: [{ $ref: "#/components/parameters/Id" }]
     post:
@@ -759,6 +777,8 @@ components:
         mount_point: { type: string }
         fs_type: { type: string }
         enabled: { type: boolean }
+        source: { type: string, enum: [config, api], description: "Where the volume is defined: recorder.yaml (read-only) or the API." }
+        editable: { type: boolean }
         state: { type: string, enum: [healthy, full, degraded, missing, disabled, draining, uninitialized] }
         state_reason: { type: string }
         writable: { type: boolean, description: Healthy and allowed by policy (system/network volumes need explicit opt-in). }
@@ -800,23 +820,24 @@ components:
       required: [id, root_path]
       properties:
         id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,62}$" }
-        root_path: { type: string }
+        root_path: { type: string, description: Absolute path. }
+        enabled: { type: boolean, default: true }
         max_percent: { type: number, exclusiveMinimum: 0, maximum: 100 }
         quota_bytes: { type: integer, minimum: 0 }
         min_free_bytes: { type: integer, minimum: 0 }
         priority: { type: integer }
         weight: { type: integer, minimum: 1 }
-        cameras: { type: array, items: { type: string } }
+        initialize: { type: boolean, description: Create the folder if missing and write the volume marker. Refused on a non-empty folder. }
     VolumePatch:
       type: object
       properties:
+        initialize: { type: boolean, description: Write the marker of an uninitialized volume. }
         enabled: { type: boolean }
         max_percent: { type: number, exclusiveMinimum: 0, maximum: 100 }
         quota_bytes: { type: integer, minimum: 0 }
         min_free_bytes: { type: integer, minimum: 0 }
         priority: { type: integer }
         weight: { type: integer, minimum: 1 }
-        cameras: { type: array, items: { type: string } }
     StorageSummary:
       type: object
       required: [volumes, writable_volumes, by_state, effective_limit_bytes, headroom_bytes, recorder_bytes, placement, pressure_policy, warnings, alerts]

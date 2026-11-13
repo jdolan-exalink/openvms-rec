@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"maps"
 	"sync"
@@ -19,7 +20,6 @@ import (
 // reacts to write failures and runs retention. It never formats or repairs.
 type Manager struct {
 	Cfg    config.Config
-	Specs  []volumes.Spec
 	Prober volumes.Prober
 	Store  *segments.Store
 	Placer *placement.Placer
@@ -27,6 +27,14 @@ type Manager struct {
 	Now    func() time.Time
 	// Policy returns retention policy per camera/representation.
 	Policy retention.PolicyFunc
+
+	goos  string
+	db    *sql.DB         // set by LoadVolumes; nil = configuration only
+	specs []volumes.Spec  // config volumes followed by API volumes
+	extra []config.Volume // API volumes (SQLite), editable at runtime
+	// chg serializes volume mutations so validation and persistence see a
+	// consistent list.
+	chg sync.Mutex
 
 	mu       sync.RWMutex
 	statuses []volumes.Status
@@ -42,7 +50,7 @@ func NewManager(cfg config.Config, goos string, prober volumes.Prober, store *se
 		return nil, err
 	}
 	m := &Manager{
-		Cfg: cfg, Specs: SpecsFromConfig(cfg, goos), Prober: prober, Store: store, Placer: p, Log: log,
+		Cfg: cfg, goos: goos, specs: SpecsFromConfig(cfg, goos), Prober: prober, Store: store, Placer: p, Log: log,
 		Now: time.Now, failed: map[string]string{},
 	}
 	m.Policy = DefaultPolicy(cfg)
@@ -83,7 +91,7 @@ func (m *Manager) Refresh(ctx context.Context) []volumes.Status {
 			return n
 		},
 	}
-	sts := in.InspectAll(m.Specs)
+	sts := in.InspectAll(m.Specs())
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := range sts {

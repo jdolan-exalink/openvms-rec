@@ -82,6 +82,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/cameras/{id}", s.getCamera)
 	mux.HandleFunc("GET /api/v1/cameras/{id}/recordings", s.recordings)
 	s.cameraAdminRoutes(mux)
+	s.volumeAdminRoutes(mux)
 	s.systemRoutes(mux)
 	s.mediaRoutes(mux)
 	return mux
@@ -152,7 +153,28 @@ func (s *Server) inspect(ctx context.Context) []volumes.Status {
 			return n
 		},
 	}
-	return in.InspectAll(storage.SpecsFromConfig(s.Cfg, runtime.GOOS))
+	return in.InspectAll(s.specs())
+}
+
+// specs returns the live volume list (config plus API volumes).
+func (s *Server) specs() []volumes.Spec {
+	if s.Storage != nil {
+		return s.Storage.Specs()
+	}
+	return storage.SpecsFromConfig(s.Cfg, runtime.GOOS)
+}
+
+// volumeDTO adds where a volume is defined to its representation.
+func (s *Server) volumeDTO(st volumes.Status, writable bool) VolumeDTO {
+	d := toDTO(st, writable)
+	d.Source = storage.SourceConfig
+	if s.Storage != nil {
+		if src := s.Storage.Source(st.Spec.ID); src != "" {
+			d.Source = src
+		}
+	}
+	d.Editable = d.Source == storage.SourceAPI
+	return d
 }
 
 func (s *Server) listVolumes(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +182,7 @@ func (s *Server) listVolumes(w http.ResponseWriter, r *http.Request) {
 	cands := storage.Candidates(sts, s.Cfg.Storage)
 	out := make([]VolumeDTO, 0, len(sts))
 	for i, st := range sts {
-		out = append(out, toDTO(st, cands[i].Writable))
+		out = append(out, s.volumeDTO(st, cands[i].Writable))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
@@ -192,7 +214,7 @@ func (s *Server) storageSummary(w http.ResponseWriter, r *http.Request) {
 func (s *Server) validateVolume(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var spec *volumes.Spec
-	for _, sp := range storage.SpecsFromConfig(s.Cfg, runtime.GOOS) {
+	for _, sp := range s.specs() {
 		if sp.ID == id {
 			spec = &sp
 			break
@@ -222,7 +244,7 @@ func (s *Server) validateVolume(w http.ResponseWriter, r *http.Request) {
 		if st.Spec.ID != id {
 			continue
 		}
-		dto := toDTO(st, cands[i].Writable)
+		dto := s.volumeDTO(st, cands[i].Writable)
 		dto.Probe = &ProbeDTO{OK: probe.OK, LatencyMS: float64(probe.Latency.Microseconds()) / 1000}
 		if probe.Err != nil {
 			dto.Probe.Error = probe.Err.Error()

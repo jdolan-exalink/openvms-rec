@@ -75,7 +75,11 @@ async function api(path, opts = {}) {
   if (key) h["X-API-Key"] = key;
   const r = await fetch(path, Object.assign({}, opts, {headers: h}));
   if (r.status === 401) { showLogin(); throw new Error("unauthorized"); }
-  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).error.message } catch {} throw new Error(m); }
+  if (!r.ok) {
+    let m = r.statusText, c = "";
+    try { const e = (await r.json()).error; m = e.message; c = e.code; } catch {}
+    throw Object.assign(new Error(m), {code: c});
+  }
   return opts.raw ? r : r.json();
 }
 
@@ -228,7 +232,8 @@ async function storage() {
   const [sum, v] = await Promise.all([api("/api/v1/storage"), api("/api/v1/storage/volumes")]);
   $("#main").innerHTML = `
   <div class="note"><b>Varios discos no son redundancia.</b> Si un disco independiente falla, se pierden sus grabaciones. Para tolerancia a fallas use RAID, Storage Spaces o ZFS por debajo del Recorder.</div>
-  <div class="card"><h2>Volúmenes · colocación <code>${esc(sum.placement)}</code> · presión <code>${esc(sum.pressure_policy)}</code></h2>
+  <div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Volúmenes · colocación <code>${esc(sum.placement)}</code> · presión <code>${esc(sum.pressure_policy)}</code></h2><button class="b primary" id="vadd">Agregar disco</button></div>
+  <div id="form"></div>
   <table><tr><th>Volumen</th><th>Estado</th><th>Ocupación del Recorder</th><th>Capacidad</th><th>Límite efectivo</th><th>Cuota</th><th>Avisos</th><th></th></tr>
   ${v.items.map(x => {
     const cap = x.capacity_bytes || 1, pct = b => (100 * b / cap).toFixed(2);
@@ -244,14 +249,57 @@ async function storage() {
     <td>${fmtGB(x.limits.effective_bytes)}<div class="small muted">por ${esc(x.limits.binding_constraint)}</div></td>
     <td>${x.quota.max_percent}%<div class="small muted">reserva ${fmtGB(x.quota.min_free_bytes)}</div></td>
     <td class="small">${x.warnings.map(w => `<div class="${w === "no_redundancy_assumed" ? "muted" : "warn"}">${esc(WARN[w] || w)}</div>`).join("")}</td>
-    <td>${x.state === "uninitialized" ? `<button class="b" data-init="${esc(x.id)}">Inicializar</button>` : ""}</td></tr>`;
+    <td>${x.state === "uninitialized" ? `<button class="b" data-init="${esc(x.id)}">Inicializar</button> ` : ""}${x.editable
+      ? `<button class="b" data-vedit="${esc(x.id)}">Editar</button> <button class="b" data-vdel="${esc(x.id)}">Quitar</button>`
+      : `<div class="muted small">${x.source === "config" ? "editar en recorder.yaml" : ""}</div>`}</td></tr>`;
   }).join("")}</table>
-  <p class="muted small">Inicializar solo funciona sobre una carpeta vacía: escribe un marcador y prueba escritura. Nunca se formatea ni repara un disco.</p></div>`;
+  <p class="muted small">Inicializar solo funciona sobre una carpeta vacía: escribe un marcador y prueba escritura. Nunca se formatea ni repara un disco. Quitar un disco solo lo saca de la lista (los archivos quedan) y se rechaza si todavía tiene grabaciones indexadas: en ese caso deshabilitalo.</p></div>`;
+  $("#vadd").onclick = () => volForm();
+  document.querySelectorAll("[data-vedit]").forEach(b => b.onclick = () => volForm(v.items.find(x => x.id === b.dataset.vedit)));
+  document.querySelectorAll("[data-vdel]").forEach(b => b.onclick = async () => {
+    if (!confirm(`¿Quitar el disco ${b.dataset.vdel} de la lista? Los archivos no se borran.`)) return;
+    try { await api(`/api/v1/storage/volumes/${encodeURIComponent(b.dataset.vdel)}`, {method: "DELETE", raw: true}); storage(); }
+    catch (e) { alert(VOLERR[e.code] || e.message); }
+  });
   document.querySelectorAll("[data-init]").forEach(b => b.onclick = async () => {
     b.disabled = true;
     try { await api(`/api/v1/storage/volumes/${encodeURIComponent(b.dataset.init)}/validate`, {method: "POST"}); storage(); }
     catch (e) { alert(e.message); b.disabled = false; }
   });
+}
+
+const VOLERR = {volume_not_empty: "La carpeta ya tiene archivos que no son del Recorder: elegí una carpeta vacía o nueva.", volume_exists: "Ya hay un disco con ese identificador.", volume_has_recordings: "El disco todavía tiene grabaciones indexadas: deshabilitalo en lugar de quitarlo."};
+function volForm(vol) {
+  const edit = !!vol, v = vol || {enabled: true, priority: 0, weight: 1, quota: {max_percent: 90, min_free_bytes: 20 * GB}};
+  const f = $("#form");
+  f.innerHTML = `<div class="card" style="background:var(--bg)"><h2>${edit ? "Editar disco " + esc(v.id) : "Nuevo disco"}</h2>
+    <div class="grid">
+      <label class="small">Identificador<br><input id="v-id" value="${esc(v.id || "")}" ${edit ? "disabled" : ""} placeholder="disco-d" pattern="[a-z0-9][a-z0-9-]*" style="width:100%"></label>
+      <label class="small">Carpeta (ruta absoluta)<br><input id="v-path" value="${esc(v.root_path || "")}" ${edit ? "disabled" : ""} placeholder="D:\\Grabaciones o /srv/grabaciones" style="width:100%"></label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label class="small">Uso máximo <input id="v-max" type="number" min="1" max="100" step="1" value="${v.quota.max_percent}" style="width:64px"> %</label>
+      <label class="small">Reserva libre <input id="v-free" type="number" min="0" step="1" value="${Math.round(v.quota.min_free_bytes / GB)}" style="width:72px"> GB</label>
+      <label class="small">Prioridad <input id="v-prio" type="number" min="0" value="${v.priority}" style="width:64px"></label>
+      <label class="small">Peso <input id="v-weight" type="number" min="1" value="${v.weight || 1}" style="width:64px"></label>
+      <label class="small"><input id="v-en" type="checkbox" ${v.enabled ? "checked" : ""}> Grabar en este disco</label>
+      ${edit && v.state !== "uninitialized" ? "" : `<label class="small"><input id="v-init" type="checkbox" checked> Crear la carpeta e inicializar</label>`}
+    </div>
+    <p class="muted small">Inicializar crea la carpeta si no existe y escribe un marcador; si la carpeta ya tiene archivos que no son del Recorder se rechaza. Nunca se formatea. Los discos del sistema y de red solo se usan si la configuración lo permite. ${edit ? "La carpeta no se puede cambiar: agregá otro disco." : ""}</p>
+    <div class="row"><button class="b primary" id="v-save">${edit ? "Guardar" : "Agregar"}</button><button class="b" id="v-cancel">Cancelar</button></div>
+    <div id="v-res" class="small"></div></div>`;
+  $("#v-cancel").onclick = () => { f.innerHTML = ""; };
+  $("#v-save").onclick = async () => {
+    const body = {max_percent: +$("#v-max").value, min_free_bytes: Math.round(+$("#v-free").value * GB), priority: +$("#v-prio").value,
+      weight: +$("#v-weight").value, enabled: $("#v-en").checked, initialize: !!$("#v-init")?.checked};
+    if (!edit) { body.id = $("#v-id").value.trim(); body.root_path = $("#v-path").value.trim(); }
+    $("#v-save").disabled = true;
+    try {
+      await api(edit ? `/api/v1/storage/volumes/${encodeURIComponent(v.id)}` : "/api/v1/storage/volumes", {method: edit ? "PATCH" : "POST",
+        headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+      f.innerHTML = ""; storage();
+    } catch (e) { $("#v-res").innerHTML = `<span class="bad">${esc(VOLERR[e.code] || e.message)}</span>`; $("#v-save").disabled = false; }
+  };
 }
 
 const MB = 1048576, fmtMB = b => b >= 1024 * MB ? (b / 1073741824).toFixed(1) + " GB" : Math.round(b / MB) + " MB";
