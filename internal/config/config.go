@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -49,6 +50,7 @@ type Config struct {
 	Storage   Storage   `yaml:"storage"`
 	Retention Retention `yaml:"retention"`
 	Recovery  Recovery  `yaml:"recovery"`
+	Discovery Discovery `yaml:"discovery"`
 	Cameras   []Camera  `yaml:"cameras"`
 }
 
@@ -188,6 +190,31 @@ type Retention struct {
 type Recovery struct {
 	CameraSDBackfill string  `yaml:"camera_sd_backfill"`
 	MaxBandwidthMbps float64 `yaml:"max_bandwidth_mbps"`
+}
+
+// Discovery bounds ONVIF discovery and probing (SSRF protection).
+type Discovery struct {
+	// AllowedNetworks are the CIDRs the Recorder may probe. Empty: private
+	// ranges only (10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16).
+	AllowedNetworks []string `yaml:"allowed_networks"`
+}
+
+// DefaultCameraNetworks are probed when discovery.allowed_networks is empty.
+var DefaultCameraNetworks = []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16"}
+
+// CameraNetworks returns the parsed allow-list (validated by Validate).
+func (d Discovery) CameraNetworks() []netip.Prefix {
+	src := d.AllowedNetworks
+	if len(src) == 0 {
+		src = DefaultCameraNetworks
+	}
+	out := make([]netip.Prefix, 0, len(src))
+	for _, s := range src {
+		if p, err := netip.ParsePrefix(strings.TrimSpace(s)); err == nil {
+			out = append(out, p.Masked())
+		}
+	}
+	return out
 }
 
 var volumeID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -398,6 +425,11 @@ func (c Config) Validate() error {
 	case "when_supported", "recover_all", "recover_events_only", "index_remote_only", "disabled":
 	default:
 		add("recovery.camera_sd_backfill: %q not recognised", c.Recovery.CameraSDBackfill)
+	}
+	for i, n := range c.Discovery.AllowedNetworks {
+		if _, err := netip.ParsePrefix(strings.TrimSpace(n)); err != nil {
+			add("discovery.allowed_networks[%d]: %q is not a CIDR", i, n)
+		}
 	}
 	if c.Recording.SegmentSeconds < 2 || c.Recording.SegmentSeconds > 600 {
 		add("recording.segment_seconds: %d must be in [2, 600]", c.Recording.SegmentSeconds)

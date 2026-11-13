@@ -18,6 +18,7 @@ import (
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
 	"github.com/jdolan-exalink/openvms-rec/internal/exports"
 	"github.com/jdolan-exalink/openvms-rec/internal/ingest"
+	"github.com/jdolan-exalink/openvms-rec/internal/onvif"
 	"github.com/jdolan-exalink/openvms-rec/internal/playback"
 	"github.com/jdolan-exalink/openvms-rec/internal/segments"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
@@ -47,11 +48,17 @@ type Server struct {
 	// FFmpeg runs connection tests; Probe overrides ingest.Probe in tests.
 	FFmpeg string
 	Probe  func(ctx context.Context, ffmpeg string, src ingest.Source) ingest.ProbeResult
+	// Discover and ONVIFProbe override LAN discovery and the ONVIF probe in tests.
+	Discover   func(ctx context.Context, opts onvif.LANOptions) ([]onvif.LANDevice, []onvif.LANInterface, error)
+	ONVIFProbe func(ctx context.Context, ep onvif.Endpoint, username, password string) (onvif.ProbeResult, error)
 
 	staticOnce sync.Once
 	staticReg  *cameras.Registry
 	probeOnce  sync.Once
 	probeSem   chan struct{}
+
+	discoverOnce sync.Once
+	discoverSem  chan struct{}
 }
 
 // Handler returns the HTTP router.
@@ -69,6 +76,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/cameras/{id}", s.getCamera)
 	mux.HandleFunc("GET /api/v1/cameras/{id}/recordings", s.recordings)
 	s.cameraAdminRoutes(mux)
+	s.onvifRoutes(mux)
 	s.mediaRoutes(mux)
 	return mux
 }

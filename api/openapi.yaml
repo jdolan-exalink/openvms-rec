@@ -139,21 +139,74 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/StreamTest" } } }
         "422": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
+  /api/v1/cameras/discover:
+    post:
+      tags: [cameras]
+      operationId: discoverCameras
+      x-status: implemented
+      description: |
+        WS-Discovery (ONVIF) multicast on every active IPv4 interface and,
+        with sweep, a unicast probe to each host of subnets up to /22 (for
+        networks where multicast does not get through). Only devices with
+        ONVIF enabled answer. Nothing is contacted over HTTP and nothing is
+        saved. One discovery at a time (429 otherwise).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sweep: { type: boolean, default: false }
+                timeout_ms: { type: integer, minimum: 500, maximum: 10000, default: 3000 }
+      responses:
+        "200":
+          description: Devices that answered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices, interfaces]
+                properties:
+                  sweep: { type: boolean }
+                  devices: { type: array, items: { $ref: "#/components/schemas/DiscoveredDevice" } }
+                  interfaces:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        address: { type: string }
+                        prefix: { type: string }
+                        swept: { type: boolean }
+                        error: { type: string }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/cameras/probe:
     post:
       tags: [cameras]
       operationId: probeCamera
-      x-status: planned
+      x-status: implemented
       description: |
-        Runs real ONVIF / driver operations against a host without saving it
-        and returns the capability matrix with evidence. Host must be inside
-        the configured camera network allowlist (SSRF protection).
+        Runs read-only ONVIF operations against a device without saving it:
+        clock (with offset compensation for WS-Security), device information,
+        services, media profiles (Media2 first, Media1 fallback) and stream
+        URIs, event topics. Returns the capability list with evidence and a
+        suggested camera (main = highest resolution, sub = next lower). Every
+        connection, including service addresses reported by the device, must
+        be inside discovery.allowed_networks (SSRF protection). Credentials are
+        never stored; with camera_id and no username the stored credentials of
+        that camera are used. Stream URIs come back without credentials.
+        422 auth_failed when the device rejects the credentials, 502
+        probe_failed when it does not answer ONVIF.
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: "#/components/schemas/ProbeRequest" } } }
       responses:
         "200": { description: Probe result, content: { application/json: { schema: { $ref: "#/components/schemas/ProbeResult" } } } }
         "400": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
   /api/v1/cameras/{id}:
     parameters: [{ $ref: "#/components/parameters/Id" }]
     get:
@@ -587,12 +640,29 @@ components:
       properties:
         items: { type: array, items: { $ref: "#/components/schemas/Camera" } }
         next_cursor: { type: string }
+    DiscoveredDevice:
+      type: object
+      required: [address, xaddrs, via, allowed]
+      properties:
+        address: { type: string, description: Source IP of the answer }
+        xaddrs: { type: array, items: { type: string }, description: Device service URLs reported by the device (untrusted) }
+        name: { type: string }
+        hardware: { type: string }
+        manufacturer: { type: string }
+        types: { type: array, items: { type: string } }
+        endpoint_reference: { type: string }
+        interface: { type: string }
+        via: { type: string, enum: [multicast, sweep] }
+        allowed: { type: boolean, description: Inside discovery.allowed_networks }
+        camera_id: { type: string, description: Existing camera whose main URL uses this address }
     ProbeRequest:
       type: object
-      required: [host]
+      description: host (with onvif_port) or xaddr is required.
       properties:
         host: { type: string }
         onvif_port: { type: integer, default: 80 }
+        xaddr: { type: string, description: Device service URL from discovery }
+        camera_id: { type: string }
         username: { type: string, writeOnly: true }
         password: { type: string, writeOnly: true, format: password }
         driver: { type: string }
@@ -603,8 +673,34 @@ components:
         model: { type: string }
         firmware: { type: string }
         serial: { type: string }
+        hardware_id: { type: string }
         clock_offset_ms: { type: integer }
         capabilities: { type: array, items: { $ref: "#/components/schemas/Capability" } }
+        profiles:
+          type: array
+          items:
+            type: object
+            properties:
+              token: { type: string }
+              name: { type: string }
+              media_version: { type: string }
+              encoding: { type: string }
+              width: { type: integer }
+              height: { type: integer }
+              frame_rate: { type: number }
+              bitrate_kbps: { type: integer }
+              stream_uri: { type: string }
+        main_url: { type: string }
+        sub_url: { type: string }
+        event_topics: { type: array, items: { type: string } }
+        analytics: { type: array, items: { type: string }, description: Analytics advertised by event topics; never proof that the device fires them }
+        camera_id: { type: string }
+        suggested:
+          type: object
+          properties:
+            name: { type: string }
+            main_url: { type: string }
+            sub_url: { type: string }
 
     Interval:
       type: object

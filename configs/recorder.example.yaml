@@ -60,6 +60,11 @@ recovery:
   camera_sd_backfill: when_supported   # only acts on capabilities confirmed on real hardware
   max_bandwidth_mbps: 20
 
+# ONVIF discovery and probing only reach these networks (SSRF protection).
+# Empty or absent: private ranges (10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16).
+discovery:
+  allowed_networks: []
+
 # Cameras. URLs never carry credentials: they come from data.secrets_file:
 #   cameras:
 #     lab-door: {username: viewer, password: "..."}
