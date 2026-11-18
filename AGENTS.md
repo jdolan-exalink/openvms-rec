@@ -31,16 +31,17 @@ OpenVMS Recorder es un NVR autónomo. Debe instalarse y funcionar sin OpenVMS Co
 
 ## Orden de trabajo (PRD §14)
 
-1. Diseño de almacenamiento multiplataforma/multivolumen ✅ (PR 1)
-2. Ingest RTSP estable con cuotas y retención ✅ (MVP: más playback, export, auth, UI y despliegue)
-3. ONVIF, microSD/Profile G y eventos (con hardware real)
-4. Integración con OpenVMS Core (otro PRD)
+1. Diseño de almacenamiento multiplataforma/multivolumen ✅ (PR 1 + endpoints/políticas/drenado completos)
+2. Ingest RTSP estable con cuotas y retención ✅ (MVP + playback, export, auth/AES-256, UI y despliegue)
+3. ONVIF, microSD/Profile G y eventos ✅ (validado en `cochera` 128 GB; `patio de luz` sin tarjeta microSD física)
+4. Integración con OpenVMS Core ✅ (adaptador desacoplado en OpenVMS Recorder; sin modificar repo `jdolan-exalink/openvms`)
 
 ## Documentos
 
 - `docs/architecture/adr-001-recording-streams-aging.md`
 - `docs/architecture/adr-002-disk-resilience.md`
 - `docs/architecture/adr-003-sd-sync.md`
+- `docs/architecture/adr-004-core-adapter.md`
 - `docs/architecture/storage.md` — diseño M04 con fórmulas
 - `docs/compatibility/README.md` — matriz de compatibilidad con evidencia
 - `docs/operations/limitations.md` — informe de limitaciones vigente

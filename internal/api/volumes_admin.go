@@ -14,6 +14,9 @@ func (s *Server) volumeAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/v1/storage/volumes/{id}", s.updateVolume)
 	mux.HandleFunc("PUT /api/v1/storage/volumes/{id}", s.updateVolume)
 	mux.HandleFunc("DELETE /api/v1/storage/volumes/{id}", s.deleteVolume)
+	mux.HandleFunc("POST /api/v1/storage/volumes/{id}/drain", s.drainVolume)
+	mux.HandleFunc("GET /api/v1/storage/policies", s.listStoragePolicies)
+	mux.HandleFunc("PATCH /api/v1/storage/policies/{id}", s.patchStoragePolicy)
 }
 
 func decodeVolume(w http.ResponseWriter, r *http.Request) (storage.VolumeInput, bool) {
@@ -56,7 +59,7 @@ func (s *Server) volumeError(w http.ResponseWriter, err error) {
 // volumeResponse returns the freshly inspected volume.
 func (s *Server) volumeResponse(w http.ResponseWriter, r *http.Request, id string, status int) {
 	sts := s.inspect(r.Context())
-	cands := storage.Candidates(sts, s.Cfg.Storage)
+	cands := storage.Candidates(sts, s.liveStorageCfg())
 	for i, st := range sts {
 		if st.Spec.ID == id {
 			writeJSON(w, status, s.volumeDTO(st, cands[i].Writable))
@@ -118,4 +121,79 @@ func (s *Server) deleteVolume(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r.Context(), "volume.delete", id, nil)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) drainVolume(w http.ResponseWriter, r *http.Request) {
+	if s.Storage == nil {
+		s.volumeError(w, storage.ErrVolumesDisabled)
+		return
+	}
+	var req struct {
+		MigrateSegments bool `json:"migrate_segments"`
+	}
+	if r.ContentLength != 0 {
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body: "+err.Error())
+			return
+		}
+	}
+	id := r.PathValue("id")
+	jobID, err := s.Storage.DrainVolume(r.Context(), id, req.MigrateSegments)
+	if err != nil {
+		s.volumeError(w, err)
+		return
+	}
+	s.audit(r.Context(), "volume.drain", id, map[string]any{"migrate_segments": req.MigrateSegments, "job_id": jobID})
+	if jobID != "" {
+		w.Header().Set("X-Migration-Job-Id", jobID)
+	}
+	s.volumeResponse(w, r, id, http.StatusAccepted)
+}
+
+func (s *Server) listStoragePolicies(w http.ResponseWriter, _ *http.Request) {
+	if s.Storage == nil {
+		sc := s.Cfg.Storage
+		writeJSON(w, http.StatusOK, map[string]any{"items": []storage.StoragePolicy{{
+			ID:                   "default",
+			DefaultMaxPercent:    sc.DefaultMaxPercent,
+			CleanupStartPercent:  sc.CleanupStartPercent,
+			CleanupTargetPercent: sc.CleanupTargetPercent,
+			MinFreeBytes:         uint64(sc.MinFreeGB * volumes.GB),
+			Placement:            sc.Placement,
+			PressurePolicy:       sc.PressurePolicy,
+		}}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": []storage.StoragePolicy{s.Storage.CurrentPolicy()}})
+}
+
+func (s *Server) patchStoragePolicy(w http.ResponseWriter, r *http.Request) {
+	if s.Storage == nil {
+		s.volumeError(w, storage.ErrVolumesDisabled)
+		return
+	}
+	var patch storage.StoragePolicyPatch
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&patch); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body: "+err.Error())
+		return
+	}
+	id := r.PathValue("id")
+	updated, err := s.Storage.UpdatePolicy(r.Context(), id, patch)
+	if err != nil {
+		if errors.Is(err, storage.ErrPolicyNotFound) {
+			writeError(w, http.StatusNotFound, "policy_not_found", err.Error())
+			return
+		}
+		s.volumeError(w, err)
+		return
+	}
+	s.audit(r.Context(), "storage.policy.update", id, map[string]any{
+		"placement":       updated.Placement,
+		"pressure_policy": updated.PressurePolicy,
+	})
+	writeJSON(w, http.StatusOK, updated)
 }

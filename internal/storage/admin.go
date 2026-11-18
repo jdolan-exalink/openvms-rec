@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -36,17 +37,28 @@ func (e *InvalidVolumeError) Error() string { return "invalid volume: " + string
 // VolumeInput is a volume created or edited through the API. Pointers keep
 // the stored value when nil (on update).
 type VolumeInput struct {
-	ID         string   `json:"id"`
-	Path       string   `json:"root_path"`
-	Enabled    *bool    `json:"enabled"`
-	MaxPercent *float64 `json:"max_percent"`
-	MinFree    *uint64  `json:"min_free_bytes"`
-	Quota      *uint64  `json:"quota_bytes"`
-	Priority   *int     `json:"priority"`
-	Weight     *int     `json:"weight"`
+	ID          string    `json:"id"`
+	Path        string    `json:"root_path"`
+	Enabled     *bool     `json:"enabled"`
+	Draining    *bool     `json:"draining"`
+	MaxPercent  *float64  `json:"max_percent"`
+	MinFree     *uint64   `json:"min_free_bytes"`
+	Quota       *uint64   `json:"quota_bytes"`
+	FolderQuota *uint64   `json:"folder_quota_bytes"`
+	Priority    *int      `json:"priority"`
+	Weight      *int      `json:"weight"`
+	Cameras     *[]string `json:"cameras"`
 	// Initialize creates the folder if missing and writes the volume marker.
 	// It refuses a non-empty folder without a marker and never formats.
 	Initialize bool `json:"initialize"`
+}
+
+// VolumeRuntime holds operational overrides (drain flag, camera pins) that can
+// apply to both YAML config volumes and API volumes without editing YAML.
+type VolumeRuntime struct {
+	Draining   *bool
+	HasCameras bool
+	Cameras    []string
 }
 
 // Specs returns the current volume specs (config first, then API).
@@ -76,18 +88,21 @@ func (m *Manager) Source(id string) string {
 // LoadVolumes reads API volumes from the database and enables mutations.
 // Config volumes win on an id clash (the API row is ignored and logged).
 func (m *Manager) LoadVolumes(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, `SELECT id, root_path, enabled, priority, weight, max_percent, quota_bytes, min_free_bytes FROM volumes ORDER BY created_at, id`)
+	rows, err := db.QueryContext(ctx, `SELECT id, root_path, enabled, priority, weight, max_percent, quota_bytes, min_free_bytes, draining, cameras_json, folder_quota_bytes FROM volumes ORDER BY created_at, id`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	var extra []config.Volume
+	overrides := map[string]VolumeRuntime{}
 	for rows.Next() {
 		var v config.Volume
-		var enabled bool
+		var enabled, draining bool
 		var maxPct sql.NullFloat64
 		var quota, minFree sql.NullInt64
-		if err := rows.Scan(&v.ID, &v.Path, &enabled, &v.Priority, &v.Weight, &maxPct, &quota, &minFree); err != nil {
+		var folderQuota int64
+		var camsJSON string
+		if err := rows.Scan(&v.ID, &v.Path, &enabled, &v.Priority, &v.Weight, &maxPct, &quota, &minFree, &draining, &camsJSON, &folderQuota); err != nil {
 			return err
 		}
 		if m.Source(v.ID) == SourceConfig {
@@ -103,24 +118,67 @@ func (m *Manager) LoadVolumes(ctx context.Context, db *sql.DB) error {
 			gb := float64(minFree.Int64) / volumes.GB
 			v.MinFreeGB = &gb
 		}
+		if folderQuota > 0 {
+			v.FolderQuotaGB = float64(folderQuota) / volumes.GB
+		}
+		if camsJSON != "" && camsJSON != "[]" {
+			_ = json.Unmarshal([]byte(camsJSON), &v.Cameras)
+		}
+		if draining {
+			d := true
+			overrides[v.ID] = VolumeRuntime{Draining: &d}
+		}
 		extra = append(extra, v)
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	if rtRows, rtErr := db.QueryContext(ctx, `SELECT volume_id, draining, cameras_json FROM volume_runtime`); rtErr == nil {
+		defer rtRows.Close()
+		for rtRows.Next() {
+			var vid string
+			var dr sql.NullBool
+			var cj sql.NullString
+			if rtRows.Scan(&vid, &dr, &cj) != nil {
+				continue
+			}
+			ov := overrides[vid]
+			if dr.Valid {
+				b := dr.Bool
+				ov.Draining = &b
+			}
+			if cj.Valid {
+				ov.HasCameras = true
+				_ = json.Unmarshal([]byte(cj.String), &ov.Cameras)
+			}
+			overrides[vid] = ov
+		}
+	}
 	m.chg.Lock()
 	defer m.chg.Unlock()
 	m.db = db
+	m.loadPolicyLocked(ctx, db)
+	m.runtimeOverrides = overrides
 	m.setExtra(extra)
 	return nil
 }
 
 // setExtra swaps the API volume list and rebuilds specs. Caller holds chg.
 func (m *Manager) setExtra(extra []config.Volume) {
+	m.mu.Lock()
 	all := m.Cfg
 	all.Storage.Volumes = append(append([]config.Volume(nil), m.Cfg.Storage.Volumes...), extra...)
 	specs := SpecsFromConfig(all, m.goos)
-	m.mu.Lock()
+	for i := range specs {
+		if ov, ok := m.runtimeOverrides[specs[i].ID]; ok {
+			if ov.Draining != nil {
+				specs[i].Draining = *ov.Draining
+			}
+			if ov.HasCameras {
+				specs[i].Cameras = append([]string(nil), ov.Cameras...)
+			}
+		}
+	}
 	m.extra, m.specs = extra, specs
 	m.mu.Unlock()
 }
@@ -183,11 +241,17 @@ func apply(v *config.Volume, in VolumeInput) {
 	if in.Quota != nil {
 		v.QuotaGB = float64(*in.Quota) / volumes.GB
 	}
+	if in.FolderQuota != nil {
+		v.FolderQuotaGB = float64(*in.FolderQuota) / volumes.GB
+	}
 	if in.Priority != nil {
 		v.Priority = *in.Priority
 	}
 	if in.Weight != nil {
 		v.Weight = *in.Weight
+	}
+	if in.Cameras != nil {
+		v.Cameras = append([]string(nil), (*in.Cameras)...)
 	}
 }
 
@@ -279,6 +343,18 @@ func (m *Manager) UpdateVolume(ctx context.Context, id string, in VolumeInput) (
 	if err := m.save(ctx, v, false); err != nil {
 		return v, err
 	}
+	if in.Draining != nil {
+		b := *in.Draining
+		if m.runtimeOverrides == nil {
+			m.runtimeOverrides = map[string]VolumeRuntime{}
+		}
+		ov := m.runtimeOverrides[id]
+		ov.Draining = &b
+		m.runtimeOverrides[id] = ov
+		_, _ = m.db.ExecContext(ctx, `UPDATE volumes SET draining = ? WHERE id = ?`, b, id)
+		_, _ = m.db.ExecContext(ctx, `INSERT INTO volume_runtime(volume_id, draining, updated_at) VALUES (?, ?, ?)
+			ON CONFLICT(volume_id) DO UPDATE SET draining = excluded.draining, updated_at = excluded.updated_at`, id, b, m.Now().UnixMilli())
+	}
 	m.setExtra(extra)
 	m.Log.Info("volume updated", "volume", v.ID)
 	m.Refresh(ctx)
@@ -333,12 +409,22 @@ func (m *Manager) save(ctx context.Context, v config.Volume, insert bool) error 
 	if v.MinFreeGB != nil {
 		minFree = int64(*v.MinFreeGB * volumes.GB)
 	}
+	folderQuota := int64(0)
+	if v.FolderQuotaGB > 0 {
+		folderQuota = int64(v.FolderQuotaGB * volumes.GB)
+	}
+	camsJSON := "[]"
+	if len(v.Cameras) > 0 {
+		if b, err := json.Marshal(v.Cameras); err == nil {
+			camsJSON = string(b)
+		}
+	}
 	if insert {
-		_, err := m.db.ExecContext(ctx, `INSERT INTO volumes(id, root_path, enabled, priority, weight, max_percent, quota_bytes, min_free_bytes, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, v.ID, v.Path, v.IsEnabled(), v.Priority, v.EffectiveWeight(), maxPct, quota, minFree, now, now)
+		_, err := m.db.ExecContext(ctx, `INSERT INTO volumes(id, root_path, enabled, priority, weight, max_percent, quota_bytes, min_free_bytes, cameras_json, folder_quota_bytes, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, v.ID, v.Path, v.IsEnabled(), v.Priority, v.EffectiveWeight(), maxPct, quota, minFree, camsJSON, folderQuota, now, now)
 		return err
 	}
-	_, err := m.db.ExecContext(ctx, `UPDATE volumes SET enabled = ?, priority = ?, weight = ?, max_percent = ?, quota_bytes = ?, min_free_bytes = ?, updated_at = ? WHERE id = ?`,
-		v.IsEnabled(), v.Priority, v.EffectiveWeight(), maxPct, quota, minFree, now, v.ID)
+	_, err := m.db.ExecContext(ctx, `UPDATE volumes SET enabled = ?, priority = ?, weight = ?, max_percent = ?, quota_bytes = ?, min_free_bytes = ?, cameras_json = ?, folder_quota_bytes = ?, updated_at = ? WHERE id = ?`,
+		v.IsEnabled(), v.Priority, v.EffectiveWeight(), maxPct, quota, minFree, camsJSON, folderQuota, now, v.ID)
 	return err
 }

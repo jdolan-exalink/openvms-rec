@@ -15,6 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -54,7 +55,9 @@ func usage() error {
   openvms-recorder storage init  [-config FILE] VOLUME_ID
   openvms-recorder migrate       [-config FILE]
   openvms-recorder apikey create [-config FILE] NAME
+  openvms-recorder sd-check      [-config FILE] CAMERA_ID
   openvms-recorder backup        [-config FILE] DEST.db
+  openvms-recorder restore       [-config FILE] SRC.db
   openvms-recorder service install -config ABS_PATH   (Windows)
   openvms-recorder service uninstall                  (Windows)
   openvms-recorder version`)
@@ -74,6 +77,10 @@ func run(args []string) error {
 		return cmdMigrate(args[1:])
 	case "backup":
 		return cmdBackup(args[1:])
+	case "restore":
+		return cmdRestore(args[1:])
+	case "sd-check":
+		return cmdSDCheck(args[1:])
 	case "service":
 		return cmdService(args[1:])
 	case "apikey":
@@ -337,4 +344,100 @@ func cmdBackup(args []string) error {
 	}
 	fmt.Println("backup written to", fs.Arg(0))
 	return nil
+}
+
+// cmdRestore verifies a SQLite backup with PRAGMA integrity_check and replaces
+// recorder.db (saving a timestamped .bak copy first). Stop the service before
+// running restore.
+func cmdRestore(args []string) error {
+	fs := flag.NewFlagSet("restore", flag.ExitOnError)
+	cfg, err := loadConfig(fs, args)
+	if err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("restore needs exactly one SRC path")
+	}
+	src := fs.Arg(0)
+	ctx := context.Background()
+	checkDB, err := sql.Open("sqlite", src+"?mode=ro")
+	if err != nil {
+		return fmt.Errorf("open backup: %w", err)
+	}
+	var res string
+	err = checkDB.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&res)
+	checkDB.Close()
+	if err != nil || res != "ok" {
+		return fmt.Errorf("backup failed integrity check (%q): %v", res, err)
+	}
+
+	if err := os.MkdirAll(cfg.Data.Dir, 0o750); err != nil {
+		return fmt.Errorf("data dir: %w", err)
+	}
+	dst := filepath.Join(cfg.Data.Dir, "recorder.db")
+	if _, err := os.Stat(dst); err == nil {
+		bak := dst + ".bak." + time.Now().UTC().Format("20060102T150405Z")
+		if err := os.Rename(dst, bak); err != nil {
+			return fmt.Errorf("backup existing db (is recorder stopped?): %w", err)
+		}
+		fmt.Println("existing db moved to", bak)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		_ = os.Remove(dst + suffix)
+	}
+
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := dst + ".restoring"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return err
+	}
+	fmt.Println("database restored from", src)
+	return nil
+}
+
+func cmdSDCheck(args []string) error {
+	fs := flag.NewFlagSet("sd-check", flag.ExitOnError)
+	cfg, err := loadConfig(fs, args)
+	if err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("sd-check requires CAMERA_ID")
+	}
+	camID := fs.Arg(0)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a, err := app.New(ctx, cfg, volumes.OSProber{}, log, version)
+	if err != nil {
+		return err
+	}
+	defer a.Close()
+	res, err := a.ProfileGSync.RunCameraSync(ctx, camID, 24*time.Hour)
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(res)
+	return err
 }

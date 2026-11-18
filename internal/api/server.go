@@ -11,13 +11,19 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/jdolan-exalink/openvms-rec/internal/auth"
 	"github.com/jdolan-exalink/openvms-rec/internal/cameras"
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
+	"github.com/jdolan-exalink/openvms-rec/internal/core"
+	"github.com/jdolan-exalink/openvms-rec/internal/events"
 	"github.com/jdolan-exalink/openvms-rec/internal/exports"
 	"github.com/jdolan-exalink/openvms-rec/internal/ingest"
+	"github.com/jdolan-exalink/openvms-rec/internal/live"
+	"github.com/jdolan-exalink/openvms-rec/internal/onvif"
 	"github.com/jdolan-exalink/openvms-rec/internal/playback"
 	"github.com/jdolan-exalink/openvms-rec/internal/segments"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
@@ -53,6 +59,23 @@ type Server struct {
 	Sampler *sysinfo.Sampler
 	Logs    *sysinfo.Ring
 
+	// Events, Provision, Discover and ONVIFProbe power ONVIF discovery/probe
+	// and camera analytics event ingestion.
+	Events       *events.Store
+	SnapshotsDir string
+	Provision    http.Handler
+	ProfileGSync *events.ProfileGSyncService
+	WebRTC       *live.Service
+	Core         *core.Adapter
+	Discover     func(ctx context.Context, timeout time.Duration) ([]onvif.DiscoveredDevice, error)
+	ONVIFProbe   func(ctx context.Context, req onvif.ProbeRequest) (onvif.ProbeResult, error)
+	TVTProbe     func(ctx context.Context, host string, port int, user, pass string) (events.TVTProbeResult, error)
+
+	// Users, Tokens and Auth power SQLite user authentication and session tokens.
+	Users  *auth.UserStore
+	Tokens *auth.TokenSigner
+	Auth   *auth.Authenticator
+
 	samplerOnce sync.Once
 	compatOnce  sync.Once
 	compat      chan struct{}
@@ -71,6 +94,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health/ready", s.ready)
 	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("GET /{$}", s.ui)
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("GET /hls.min.js", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=86400")
@@ -85,15 +111,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/cameras/{id}/recordings", s.recordings)
 	mux.HandleFunc("GET /api/v1/cameras/{id}/snapshot", s.cameraSnapshot)
 	s.cameraAdminRoutes(mux)
+	s.onvifAndEventRoutes(mux)
 	s.volumeAdminRoutes(mux)
+	s.storageEstimateRoutes(mux)
 	s.systemRoutes(mux)
+	s.userRoutes(mux)
 	s.mediaRoutes(mux)
+	s.liveRoutes(mux)
+	s.coreRoutes(mux)
 	return mux
 }
 
 func (s *Server) ui(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; media-src 'self' blob:; img-src 'self' data: blob:; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; media-src 'self' blob:; img-src 'self' data: blob:; worker-src 'self' blob:; frame-ancestors 'none'")
 	w.Write(web.Index)
 }
 
@@ -121,20 +152,47 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 // capabilities reports what this build implements. Camera capabilities are
 // per camera and only ever come from probes against real hardware.
 func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
+	sdAuto := s.ProfileGSync != nil && s.Cfg.Recovery.AutoSyncSeconds > 0 && !strings.EqualFold(s.Cfg.Recovery.CameraSDBackfill, "disabled")
+	sdFeature := "planned"
+	if s.ProfileGSync != nil {
+		sdFeature = "implemented"
+	}
+	coreFeature := "planned"
+	if s.Core != nil {
+		coreFeature = "implemented"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version": s.Version,
-		"os":      runtime.GOOS,
-		"arch":    runtime.GOARCH,
+		"version":                  s.Version,
+		"os":                       runtime.GOOS,
+		"arch":                     runtime.GOARCH,
+		"recording_mode":           s.Cfg.Recording.Mode,
+		"default_stream":           s.Cfg.Recording.DefaultStream,
+		"dual_recording":           s.Cfg.Recording.DualRecording,
+		"sd_auto_sync":             sdAuto,
+		"sd_sync_interval_seconds": s.Cfg.Recovery.AutoSyncSeconds,
 		"features": map[string]string{
-			"storage.multi_volume":    "implemented",
-			"storage.retention":       "implemented",
-			"recording.rtsp":          "implemented",
-			"cameras.onvif_discovery": "planned",
-			"camera_sd.profile_g":     "planned",
-			"playback.hls":            "implemented",
-			"exports":                 "implemented",
+			"storage.multi_volume":     "implemented",
+			"storage.retention":        "implemented",
+			"storage.volume_drain":     "implemented",
+			"storage.policies":         "implemented",
+			"recording.rtsp":           "implemented",
+			"camera_recording_control": "implemented",
+			"cameras.onvif_discovery":  "implemented",
+			"events.analytics":         "implemented",
+			"camera_sd.profile_g":      sdFeature,
+			"playback.hls":             "implemented",
+			"live.webrtc":              "implemented",
+			"exports":                  "implemented",
+			"core_adapter":             coreFeature,
 		},
 	})
+}
+
+func (s *Server) liveStorageCfg() config.Storage {
+	if s.Storage != nil {
+		return s.Storage.StorageConfig()
+	}
+	return s.Cfg.Storage
 }
 
 func (s *Server) inspect(ctx context.Context) []volumes.Status {
@@ -182,7 +240,7 @@ func (s *Server) volumeDTO(st volumes.Status, writable bool) VolumeDTO {
 
 func (s *Server) listVolumes(w http.ResponseWriter, r *http.Request) {
 	sts := s.inspect(r.Context())
-	cands := storage.Candidates(sts, s.Cfg.Storage)
+	cands := storage.Candidates(sts, s.liveStorageCfg())
 	out := make([]VolumeDTO, 0, len(sts))
 	for i, st := range sts {
 		out = append(out, s.volumeDTO(st, cands[i].Writable))
@@ -192,8 +250,9 @@ func (s *Server) listVolumes(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) storageSummary(w http.ResponseWriter, r *http.Request) {
 	sts := s.inspect(r.Context())
-	cands := storage.Candidates(sts, s.Cfg.Storage)
-	sum := SummaryDTO{Placement: s.Cfg.Storage.Placement, PressurePolicy: s.Cfg.Storage.PressurePolicy, ByState: map[string]int{}}
+	sc := s.liveStorageCfg()
+	cands := storage.Candidates(sts, sc)
+	sum := SummaryDTO{Placement: sc.Placement, PressurePolicy: sc.PressurePolicy, ByState: map[string]int{}}
 	for i, st := range sts {
 		sum.Volumes++
 		sum.ByState[string(st.State)]++

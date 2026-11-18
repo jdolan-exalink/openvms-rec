@@ -71,6 +71,13 @@ type Spec struct {
 	Cameras  []string
 }
 
+// ProbeInfo captures the last write/fsync health probe on a volume.
+type ProbeInfo struct {
+	OK        bool
+	LatencyMS float64
+	Error     string
+}
+
 // Status is the observed state of one volume after inspection.
 type Status struct {
 	Spec        Spec
@@ -80,6 +87,7 @@ type Status struct {
 	Disk        platform.DiskUsage
 	Usage       Usage
 	Limits      Limits
+	Probe       *ProbeInfo
 	Warnings    []string
 	InspectedAt time.Time
 }

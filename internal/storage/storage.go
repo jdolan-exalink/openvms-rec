@@ -23,6 +23,7 @@ func SpecsFromConfig(cfg config.Config, goos string) []volumes.Spec {
 			Policy: volumes.Policy{
 				MaxPercent:           v.EffectiveMaxPercent(s),
 				QuotaBytes:           uint64(v.QuotaGB * volumes.GB),
+				FolderQuotaBytes:     uint64(v.FolderQuotaGB * volumes.GB),
 				MinFreeBytes:         uint64(v.EffectiveMinFreeGB(s) * volumes.GB),
 				DefaultMaxPercent:    s.DefaultMaxPercent,
 				CleanupStartPercent:  s.CleanupStartPercent,

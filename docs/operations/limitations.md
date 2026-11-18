@@ -1,57 +1,48 @@
 # Informe de limitaciones
 
-Actualizado con cada entrega. Última: **MVP — grabación, playback, export, UI y despliegue** (2026-11-12).
+Actualizado con cada entrega. Última: **Cierre Fases 1–3 + Adaptador Fase 4 OpenVMS Core + validación real Profile G microSD en `cochera`** (2026-11-17).
 
-## Implementado y probado (tests automáticos)
+## Implementado y probado (tests automáticos + UI en vivo)
 
-- Cálculo de límite efectivo, histéresis y fórmulas de capacidad del PRD §7.
-- Identidad de volumen con marcador, cambio de ruta/letra, disco equivocado montado, duplicados, estados `healthy/full/degraded/missing/disabled/draining/uninitialized`.
-- Colocación `balanced`/`camera_affinity`/`manual` con pesos, prioridades, fallback y persistencia de afinidad.
-- Planificador y ejecutor de retención sobre índice SQLite real y archivos reales, incluida la carrera "export toma el segmento entre plan y borrado".
-- Migraciones SQLite idempotentes en ruta con espacios y Unicode.
-- API de salud y almacenamiento; CLI `storage check/init`, `serve`, `migrate`, `version`.
-
-- Ingest RTSP: FFmpeg `-c copy` → MPEG-TS → corte propio en keyframes; cada segmento empieza con PAT/PMT + keyframe y decodifica solo (verificado con ffprobe para H.264 y H.265). Escritura temporal en `.tmp/` del mismo volumen, fsync, rename atómico, SHA-256.
-- Reconexión exponencial con jitter, gaps explícitos (`stream_lost`, `no_volume`, `recorder_stopped`, `recorder_down`, `connecting` desde que arranca el recorder hasta el primer segmento), conmutación a otro volumen ante error de disco (ST-04), reconciliación tras `kill -9`/corte de energía.
-- Audio: copia si el contenedor lo admite; G.711 se detecta y se transcodifica solo el audio a AAC (video siempre copiado).
-- Monitor de almacenamiento cada 30 s con probe de escritura y retención automática dentro de `serve`.
-- Reproducción en el navegador con hls.js embebido (Chrome, Edge, Firefox) o HLS nativo (Safari). Si el navegador no decodifica HEVC, el "Modo compatible" convierte cada segmento a H.264 720p al vuelo solo para ver (máximo 2 a la vez; usa CPU del servidor). Grabación y export no cambian.
-- Playback HLS de los segmentos TS sin transcodificar, con `EXT-X-DISCONTINUITY` en los gaps y tokens HMAC de 15 min. La clave se genera al arrancar: los tokens no sobreviven un reinicio.
-- Export: job idempotente, verifica SHA-256 de cada segmento fuente, retiene los segmentos con hold mientras dura, corta con `-c copy` al keyframe anterior al inicio pedido (el clip puede empezar hasta un GOP antes) y entrega ZIP con `video.mp4` + `manifest.json`. Descargas y exports quedan en `audit_log`.
-- API keys `ovr_…` (solo hash SHA-256 en archivo 0600), `X-API-Key` o `Bearer`, 429 tras 10 fallos/min por IP. `serve` no arranca fuera de loopback sin claves. `/metrics` Prometheus.
-- Alta, edición y baja de cámaras desde la UI/API, con botón "Probar conexión" (códecs, resolución, error de clave/ruta/red). Los cambios se aplican en caliente: solo se reinicia la grabación de esa cámara. Las cámaras del YAML se muestran como solo lectura. Una cámara con grabaciones no se puede borrar, solo deshabilitar.
-- Página "Sistema": CPU y RAM del recorder, de cada FFmpeg y del equipo, y los últimos 50 avisos/errores. Panel de bandeja de Windows (`openvms-tray.exe`) con estado por color y control del servicio; **compilado pero no probado todavía en Windows real**.
-- UI web mínima en español (panel, cámaras, timeline, reproducción, export, almacenamiento), verificada con Chromium headless.
-- `backup DEST` (copia consistente de SQLite con `VACUUM INTO`).
-- Prueba de punta a punta manual con MediaMTX (RTSP con autenticación), 2 cámaras simuladas (H.264+AAC y H.265+G.711), 2 volúmenes, corte de cámara y `kill -9` del recorder.
+- **Almacenamiento multivolumen y políticas (Fase 1):**
+  - Cálculo de límite efectivo (incluyendo `folder_quota_bytes`), histéresis, colocación `balanced` / `camera_affinity` / `manual`, asignación de cámaras por disco desde API/UI y estimador de retención en 3 etapas (`GET /api/v1/storage/estimate`, `PUT /api/v1/storage/retention`).
+  - Identidad de volumen por marcador y GUID/UUID, probe I/O activo con medición de latencia (`probe.latency_ms`), drenado de volúmenes (`POST /api/v1/storage/volumes/{id}/drain` con migración opcional verificada por SHA-256 y aumento atómico de `generation`), y políticas globales modificables en caliente (`GET /api/v1/storage/policies`, `PATCH /api/v1/storage/policies/{id}`).
+  - Planificador y ejecutor de retención con holds de exportación y preservación de evidencia protegida; migraciones SQLite `0001`–`0009`.
+- **Ingest RTSP, reproducción, exportaciones y seguridad (Fase 2):**
+  - Ingest `-c copy` en video (AAC en audio G.711), corte propio en keyframes, escritura atómica `.tmp/`, SHA-256, reconexión exponencial, gaps explícitos y pausa/reanudación de grabación por cámara (`POST /api/v1/cameras/{id}/recording/start|stop`, persistido también para cámaras YAML).
+  - Vista **En vivo (WebRTC)** con grillas configurables, drag & drop en árbol lateral, zoom digital 1×–8× SD/HD, audio muteado por defecto con control de volumen; modo **Grabado** con timeline sincronizado, HLS VOD (`Compat H.264` opcional) y selección Inicio/Fin para **Exportaciones** MP4/ZIP con modal reproductor, HTTP Range y cancelación.
+  - RBAC (`admin`, `operator`, `viewer`), tokens `ovs_…`, revocación individual de sesiones (`POST /api/v1/auth/logout` con tabla `revoked_tokens`), API keys `ovr_…` SHA-256, **cifrado AES-256-GCM en reposo** para `<data.dir>/camera-credentials.yaml` (`enc:v1:…` con fallback de lectura legacy) y token del adaptador Core, rate-limiting 429, TLS, SSRF guard (`server.camera_networks`), `backup`/`restore` y `/metrics`.
+- **ONVIF + TVT/Provision + Profile G + Analíticas (Fase 3):**
+  - WS-Discovery, PullPoint, push HTTP TVT (`/SendAlarmData`, `/GetDiskInfo`, perímetro), `MotionDetector` conectado a `LiveHub` (`pipe:0`, sin sesión RTSP extra) y snapshots anotados.
+  - Backfill **Profile G** automático (periódico + reactivo en `OnGapClosed` con debounce 3 s), proxy RTSP `Range: clock=` con reemplazo de `Range: npt=`, fallback video-only para pistas `pcma/0`, y distinción explícita en UI entre tarjeta sin formatear y ausencia de tarjeta / sin formato (`sin tarjeta / sin formatear`).
+- **Integración OpenVMS Core (Fase 4 — [ADR-004](../architecture/adr-004-core-adapter.md)):**
+  - Adaptador opcional e independiente en `internal/core` con endpoints `GET /api/v1/core/status`, `PUT /api/v1/core/config`, `POST /api/v1/core/sync` y `GET /api/v1/core/manifest`, push firmado HMAC-SHA256 (`heartbeat` + eventos por cursor SQLite) y panel de administración en **Configuración → Sistema**.
 
 ## No implementado todavía
 
-- Asignar cámaras a un disco desde la UI (`cameras` de un volumen solo en el YAML).
-- Descubrimiento de cámaras y obtención automática de la URL RTSP por ONVIF: hoy hay que escribir la ruta del stream.
-- ONVIF/descubrimiento, drivers, microSD/Profile G, eventos.
-- Vista en vivo con video: el panel muestra una miniatura del último keyframe grabado (unos segundos de atraso, actualizada cada 10 s) y la reproducción arranca en el último segmento cerrado (hasta ~1 min de atraso). No se abre una segunda sesión RTSP con la cámara.
-- Las credenciales de cámaras agregadas por la UI se guardan en texto plano en `<data.dir>/camera-credentials.yaml`, protegido solo por permisos (0600 en Linux, ACL del directorio de datos en Windows). No hay cifrado en reposo.
-- "Probar conexión" permite a quien tenga una API key hacer que el servidor abra conexiones RTSP a cualquier host (máximo 2 a la vez). Falta la allowlist de redes de cámaras del PRD.
-- TLS, RBAC y allowlist de redes. Hay API keys, pero todas tienen el mismo permiso. **Mitigación:** sin TLS, exponer el puerto solo detrás de un proxy HTTPS o en red de confianza. La UI guarda la clave en `sessionStorage` y no usa cookies, por lo que no aplica CSRF.
-- SMART, latencias de IO, estimación de días de retención.
-- Restore de SQLite automatizado (hoy: detener servicio y reemplazar el archivo). Instaladores MSI/.deb firmados.
+- Monitoreo SMART de hardware y autodetección automática desde el SO de cuotas NTFS/ext4 por carpeta (`folder_quota_gb` hoy es configurable explícitamente).
+- Adaptadores propietarios de descarga SD para cámaras que no implementen ONVIF Profile G.
+- mTLS máquina-a-máquina.
+- Instaladores firmados `.msi` / `.deb`.
+- Adaptador homólogo del lado de **OpenVMS Core** (`jdolan-exalink/openvms`), fuera de alcance por Regla #1 de `AGENTS.md`.
 
 ## Precisión y comportamiento a conocer
 
-- Los tiempos de segmento son reloj del host (UTC) al recibir los paquetes, no el reloj de la cámara: precisión ≈ un GOP + jitter de red. Duración de segmento = objetivo … objetivo + 1 GOP.
-- Si falla un disco a mitad de segmento, la sesión RTSP se reinicia para que el próximo segmento empiece en keyframe en otro volumen: pérdida típica 1–3 s, registrada como gap.
-- En Windows FFmpeg se asigna a un job object con `KILL_ON_JOB_CLOSE`, así muere con el servicio.
+- Los tiempos de segmento usan reloj del host (UTC) al recibir paquetes: precisión ≈ 1 GOP + jitter de red.
+- Si falla un disco a mitad de segmento o durante drenado, el ingest cambia de volumen en keyframe (pérdida típica 1–3 s registrada como gap).
+- La reproducción directa H.265/HEVC depende del navegador; `Compat H.264` transcodifica solo la vista previa sin alterar los archivos grabados ni los ZIP/MP4 exportados.
 
 ## Validado solo parcialmente
 
-- **Windows:** el código de plataforma (GUID de volumen, espacio libre, tipo de unidad, disco de sistema) compila y pasa `go vet`, pero **no se ejecutó en Windows**, tampoco el servicio ni `install.ps1`. Falta runner Windows en CI y pruebas NTFS/ReFS, cambio de letra real, ACL y servicio sin sesión (PRD §11).
-- **Linux:** probado en ext4 dentro de contenedor. Faltan XFS, ZFS, mdadm, discos extraíbles reales y desconexión física.
-- **Cuota de carpeta** (`FolderQuotaBytes`): soportada en el cálculo, pero no se detecta automáticamente en ningún SO todavía.
-
-- **Docker:** Dockerfile y compose escritos, pero la imagen **no se construyó ni probó** en este entorno.
-- **systemd:** unidad e instalador escritos, no ejecutados en un host con systemd real.
+- **Windows:** API, ingest, WebRTC live, timeline Grabado, Exportaciones y backfill real Profile G microSD validados en Windows 11 real (`cochera` con microSD 128 GB; `patio de luz` no tiene microSD física); siguen pendientes pruebas administrativas de **Windows Service SCM** (`install.ps1` / `uninstall.ps1`), `openvms-tray.exe` y discos ReFS / cambio real de letra en producción.
+- **Linux:** probado en ext4 dentro de contenedor (`go test -race ./...`); faltan pruebas en `systemd` real, XFS, ZFS y mdadm.
+- **Docker / CI:** Dockerfile y compose definidos; falta runner Windows en CI.
 
 ## Hardware
 
-Ninguna capacidad de cámara está confirmada. La Provision I4-320IPSN-VF-V4 está pendiente de laboratorio. No se declara soporte de Profile G, microSD replay ni analíticas para ningún modelo.
+- Ver matriz y evidencia redactada en [`docs/compatibility/README.md`](../compatibility/README.md).
+- `Provision-ISR I4-320IPSN-VF-V4` sigue sin validar (`unknown`).
+
+## Autenticación de usuarios
+
+En el primer despliegue (cuando la tabla `users` en SQLite está vacía) se crea automáticamente el usuario por defecto `admin` con contraseña `admin123` (hash `pbkdf2_sha256` con sal). **Cambiar la contraseña de `admin` inmediatamente en producción.**

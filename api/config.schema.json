@@ -161,7 +161,27 @@
           "type": "number",
           "minimum": 0,
           "default": 20
+        },
+        "auto_sync_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400,
+          "default": 300
         }
+      }
+    },
+    "core": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "core_url": { "type": "string" },
+        "node_id": { "type": "string" },
+        "site_id": { "type": "string" },
+        "sync_interval_seconds": { "type": "integer", "minimum": 0, "maximum": 3600, "default": 30 },
+        "push_events": { "type": "boolean", "default": true },
+        "push_health": { "type": "boolean", "default": true },
+        "tls_insecure_skip_verify": { "type": "boolean", "default": false }
       }
     },
     "cameras": {
@@ -222,6 +242,10 @@
           "$ref": "#/$defs/percent"
         },
         "quota_gb": {
+          "type": "number",
+          "minimum": 0
+        },
+        "folder_quota_gb": {
           "type": "number",
           "minimum": 0
         },

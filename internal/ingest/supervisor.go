@@ -154,6 +154,9 @@ type Recorder struct {
 	FFmpeg  string // binary path; default "ffmpeg"
 	Segment time.Duration
 	Sink    *Sink
+	// LiveTap, when set, receives a non-blocking copy of the active MPEG-TS
+	// byte stream so live WebRTC viewers never open extra camera RTSP sessions.
+	LiveTap io.Writer
 	Log     *slog.Logger
 	// Args overrides FFmpegArgs (tests use a synthetic source).
 	Args func(audio string) []string
@@ -267,7 +270,11 @@ func (r *Recorder) session(ctx context.Context, audio string) (string, error) {
 			sink = audioGuard{r.Sink}
 		}
 	}
-	segErr := seg.Run(ctx, stdout, sink)
+	var tsReader io.Reader = stdout
+	if r.LiveTap != nil {
+		tsReader = io.TeeReader(stdout, r.LiveTap)
+	}
+	segErr := seg.Run(ctx, tsReader, sink)
 	if segErr != nil && !errors.Is(segErr, context.Canceled) {
 		// Disk or index failure: stop FFmpeg so the next session starts on a
 		// keyframe in a healthy volume.

@@ -24,10 +24,13 @@ func (s *Server) mediaRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/cameras/{id}/playback", s.createPlayback)
 	mux.HandleFunc("GET /api/v1/playback/{token}/index.m3u8", s.playlist)
 	mux.HandleFunc("GET /api/v1/playback/{token}/segments/{seg}", s.segment)
+	mux.HandleFunc("GET /api/v1/exports", s.listExports)
 	mux.HandleFunc("POST /api/v1/exports", s.createExport)
 	mux.HandleFunc("GET /api/v1/exports/{id}", s.getExport)
+	mux.HandleFunc("DELETE /api/v1/exports/{id}", s.deleteExport)
 	mux.HandleFunc("POST /api/v1/exports/{id}/cancel", s.cancelExport)
 	mux.HandleFunc("GET /api/v1/exports/{id}/download", s.downloadExport)
+	mux.HandleFunc("GET /api/v1/exports/{id}/video", s.streamExportVideo)
 	mux.HandleFunc("GET /api/v1/jobs", s.listJobs)
 }
 
@@ -63,11 +66,33 @@ func (s *Server) createPlayback(w http.ResponseWriter, r *http.Request) {
 	exp := s.now().Add(playbackTTL).UTC()
 	compat := r.URL.Query().Get("compat") == "1" && s.FFmpeg != ""
 	tok := s.Signer.Sign(playback.Grant{CameraID: id, Representation: rep, From: from, To: to, Expires: exp, Compat: compat})
-	writeJSON(w, http.StatusCreated, map[string]any{
+	segs, _ := segments.New(s.DB).Range(r.Context(), id, rep, from, to)
+	finalCount := 0
+	hasWriting := false
+	var firstStart time.Time
+	for _, sg := range segs {
+		if sg.Status == segments.StatusFinal {
+			if _, ok := s.volumeRoot(r, sg.VolumeID); ok {
+				finalCount++
+				if firstStart.IsZero() {
+					firstStart = sg.Start
+				}
+			}
+		} else if sg.Status == segments.StatusWriting {
+			hasWriting = true
+		}
+	}
+	resp := map[string]any{
 		"url":        "/api/v1/playback/" + tok + "/index.m3u8",
 		"expires_at": exp,
 		"compat":     compat,
-	})
+		"segments":   finalCount,
+		"writing":    hasWriting,
+	}
+	if !firstStart.IsZero() {
+		resp["playlist_start"] = firstStart.UTC()
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 func (s *Server) grant(w http.ResponseWriter, r *http.Request) (playback.Grant, bool) {
@@ -199,9 +224,101 @@ func (s *Server) cancelExport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "cancelling"})
 }
 
+func (s *Server) listExports(w http.ResponseWriter, r *http.Request) {
+	if s.Exports == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := s.Exports.ListExports(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) deleteExport(w http.ResponseWriter, r *http.Request) {
+	if s.Exports == nil {
+		writeError(w, http.StatusNotImplemented, "not_available", "exports not configured")
+		return
+	}
+	err := s.Exports.Delete(r.Context(), r.PathValue("id"))
+	if errors.Is(err, exports.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "export_not_found", "no export with that id")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not delete export")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func safeExportFilename(e exports.Export) string {
+	base := strings.TrimSpace(e.Request.Name)
+	if base == "" {
+		base = e.Request.CameraID + "-" + e.ID
+	}
+	var b strings.Builder
+	for _, r := range base {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.':
+			b.WriteRune(r)
+		case r == ' ':
+			b.WriteByte('_')
+		}
+	}
+	out := strings.Trim(b.String(), "._")
+	if out == "" {
+		return e.ID
+	}
+	return out
+}
+
+func (s *Server) streamExportVideo(w http.ResponseWriter, r *http.Request) {
+	if s.Exports == nil {
+		writeError(w, http.StatusNotImplemented, "not_available", "exports not configured")
+		return
+	}
+	rsc, e, err := s.Exports.Video(r.Context(), r.PathValue("id"))
+	switch {
+	case errors.Is(err, exports.ErrNotFound):
+		writeError(w, http.StatusNotFound, "export_not_found", "no export with that id")
+		return
+	case errors.Is(err, exports.ErrNotReady):
+		writeError(w, http.StatusConflict, "export_not_ready", "export state is "+e.State)
+		return
+	case errors.Is(err, os.ErrNotExist):
+		writeError(w, http.StatusGone, "export_missing", "export video no longer exists")
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "internal", "query failed")
+		return
+	}
+	defer rsc.Close()
+	if r.URL.Query().Get("compat") == "1" {
+		s.transcodeExportMP4(w, r, rsc)
+		return
+	}
+	name := safeExportFilename(e) + ".mp4"
+	disp := "inline"
+	if r.URL.Query().Get("download") == "1" || r.URL.Query().Get("format") == "mp4" {
+		disp = `attachment; filename="` + name + `"`
+	}
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Content-Disposition", disp)
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	http.ServeContent(w, r, name, e.UpdatedAt, rsc)
+}
+
 func (s *Server) downloadExport(w http.ResponseWriter, r *http.Request) {
 	if s.Exports == nil {
 		writeError(w, http.StatusNotImplemented, "not_available", "exports not configured")
+		return
+	}
+	if r.URL.Query().Get("format") == "mp4" {
+		s.streamExportVideo(w, r)
 		return
 	}
 	p, e, err := s.Exports.Archive(r.Context(), r.PathValue("id"))
@@ -222,10 +339,11 @@ func (s *Server) downloadExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
+	name := safeExportFilename(e) + ".zip"
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+e.ID+`.zip"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	w.Header().Set("X-Checksum-SHA256", e.SHA256)
-	http.ServeContent(w, r, e.ID+".zip", e.UpdatedAt, f)
+	http.ServeContent(w, r, name, e.UpdatedAt, f)
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {

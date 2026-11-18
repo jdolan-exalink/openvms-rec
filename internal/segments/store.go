@@ -167,6 +167,21 @@ func (s *Store) PendingDeletes(ctx context.Context, volumeID string) ([]Segment,
 	return s.query(ctx, `WHERE volume_id = ? AND status = 'deleting' ORDER BY id`, volumeID)
 }
 
+// FinalOnVolume returns final segments stored on volumeID for volume drain migration.
+func (s *Store) FinalOnVolume(ctx context.Context, volumeID string) ([]Segment, error) {
+	return s.query(ctx, `WHERE volume_id = ? AND status = 'final' ORDER BY start_utc, id`, volumeID)
+}
+
+// Relocate updates a segment's volume_id, relative_path and checksum after
+// verified migration (increments generation atomically).
+func (s *Store) Relocate(ctx context.Context, id int64, fromVolumeID, toVolumeID, relPath, checksum string, size uint64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE segments
+		SET volume_id = ?, relative_path = ?, checksum = ?, size_bytes = ?, generation = generation + 1
+		WHERE id = ? AND volume_id = ? AND status = 'final'`,
+		toVolumeID, relPath, checksum, size, id, fromVolumeID)
+	return one(res, err, "relocate segment %d", id)
+}
+
 // Range lists non-deleted segments of a camera overlapping [from, to), in
 // chronological order across all volumes (ST-07). Segments on missing
 // volumes are still returned; callers join with volume state to report them
@@ -360,4 +375,51 @@ func (s *Store) ReleaseHolder(ctx context.Context, holder string) error {
 func (s *Store) Latest(ctx context.Context, cameraID, rep string, n int) ([]Segment, error) {
 	return s.query(ctx, `WHERE camera_id = ? AND representation_id = ? AND status IN ('writing', 'final')
 		ORDER BY start_utc DESC, id DESC LIMIT ?`, cameraID, rep, n)
+}
+
+// ResolveGapCoverage trims, deletes, or splits gap id after [coveredStart, coveredEnd)
+// has been genuinely recovered into segments so remaining uncovered ranges stay
+// explicit gaps (ADR-003).
+func (s *Store) ResolveGapCoverage(ctx context.Context, id int64, coveredStart, coveredEnd time.Time) error {
+	var cam, rep, reason string
+	var gStartMS int64
+	var gEndNull sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT camera_id, representation_id, start_utc, end_utc, reason FROM recording_gaps WHERE id = ?`, id,
+	).Scan(&cam, &rep, &gStartMS, &gEndNull, &reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !gEndNull.Valid {
+		return nil
+	}
+	cs, ce := ms(coveredStart), ms(coveredEnd)
+	ge := gEndNull.Int64
+	if ce <= gStartMS || cs >= ge {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM recording_gaps WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if cs > gStartMS {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO recording_gaps(camera_id, representation_id, start_utc, end_utc, reason) VALUES (?, ?, ?, ?, ?)`,
+			cam, rep, gStartMS, cs, reason); err != nil {
+			return err
+		}
+	}
+	if ce < ge {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO recording_gaps(camera_id, representation_id, start_utc, end_utc, reason) VALUES (?, ?, ?, ?, ?)`,
+			cam, rep, ce, ge, reason); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

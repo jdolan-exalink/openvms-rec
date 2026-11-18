@@ -108,6 +108,10 @@ func toDTO(st volumes.Status, writable bool) VolumeDTO {
 	if warn == nil {
 		warn = []string{}
 	}
+	var probe *ProbeDTO
+	if st.Probe != nil {
+		probe = &ProbeDTO{OK: st.Probe.OK, LatencyMS: st.Probe.LatencyMS, Error: st.Probe.Error}
+	}
 	return VolumeDTO{
 		ID: st.Spec.ID, RootPath: st.Spec.Root, StableID: st.Info.StableID, MountPoint: st.Info.MountPoint,
 		FSType: st.Info.FSType, Enabled: st.Spec.Enabled, State: string(st.State), Reason: st.Reason,
@@ -121,6 +125,7 @@ func toDTO(st volumes.Status, writable bool) VolumeDTO {
 			CleanupStartBytes: st.Limits.CleanupStart, CleanupTargetBytes: st.Limits.CleanupTarget,
 			HeadroomBytes: st.Limits.Headroom,
 		},
+		Probe:       probe,
 		InspectedAt: st.InspectedAt,
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -43,13 +44,46 @@ const (
 
 // Config is the root of the YAML file.
 type Config struct {
-	Server    Server    `yaml:"server"`
-	Data      Data      `yaml:"data"`
-	Recording Recording `yaml:"recording"`
-	Storage   Storage   `yaml:"storage"`
-	Retention Retention `yaml:"retention"`
-	Recovery  Recovery  `yaml:"recovery"`
-	Cameras   []Camera  `yaml:"cameras"`
+	Server    Server       `yaml:"server"`
+	Data      Data         `yaml:"data"`
+	Recording Recording    `yaml:"recording"`
+	Storage   Storage      `yaml:"storage"`
+	Retention Retention    `yaml:"retention"`
+	Recovery  Recovery     `yaml:"recovery"`
+	Events    EventsConfig `yaml:"events"`
+	Core      CoreConfig   `yaml:"core"`
+	Cameras   []Camera     `yaml:"cameras"`
+}
+
+// CoreConfig configures the optional Phase 4 integration adapter with OpenVMS Core.
+// Recorder stays fully autonomous when Enabled is false or Core is unreachable.
+type CoreConfig struct {
+	Enabled               bool   `yaml:"enabled"`
+	CoreURL               string `yaml:"core_url"`
+	NodeID                string `yaml:"node_id"`
+	SiteID                string `yaml:"site_id"`
+	SyncIntervalSeconds   int    `yaml:"sync_interval_seconds"`
+	PushEvents            *bool  `yaml:"push_events"`
+	PushHealth            *bool  `yaml:"push_health"`
+	TLSInsecureSkipVerify bool   `yaml:"tls_insecure_skip_verify"`
+}
+
+// EventsConfig tunes event normalization, TVT active HTTP polling, and optional
+// local NVR video classification.
+type EventsConfig struct {
+	MinConfidence  float64          `yaml:"min_confidence"`
+	TVTPollSeconds int              `yaml:"tvt_poll_seconds"`
+	Classifier     ClassifierConfig `yaml:"classifier"`
+}
+
+// ClassifierConfig selects an optional local AI inference adapter triggered on
+// motion frames ("none", "http", or "command").
+type ClassifierConfig struct {
+	Mode          string   `yaml:"mode"`
+	Endpoint      string   `yaml:"endpoint"`
+	Command       []string `yaml:"command"`
+	MinConfidence float64  `yaml:"min_confidence"`
+	TimeoutMS     int      `yaml:"timeout_ms"`
 }
 
 // Camera is a recorded camera. URLs must not contain credentials: they live
@@ -58,6 +92,11 @@ type Camera struct {
 	ID             string           `yaml:"id"`
 	Name           string           `yaml:"name"`
 	Enabled        *bool            `yaml:"enabled"`
+	Host           string           `yaml:"host"`
+	ONVIFPort      int              `yaml:"onvif_port"`
+	ONVIFEvents    *bool            `yaml:"onvif_events"`
+	Brand          string           `yaml:"brand"`
+	NVRMotion      bool             `yaml:"nvr_motion"`
 	MainURL        string           `yaml:"main_url"`
 	SubURL         string           `yaml:"sub_url"`
 	CredentialsRef string           `yaml:"credentials_ref"`
@@ -67,6 +106,29 @@ type Camera struct {
 	DualRecording  bool             `yaml:"dual_recording"`
 	Retention      *CameraRetention `yaml:"retention"`
 }
+
+// EffectiveHost returns Host if set, or the hostname parsed from MainURL.
+func (c Camera) EffectiveHost() string {
+	if h := strings.TrimSpace(c.Host); h != "" {
+		return h
+	}
+	u, err := url.Parse(c.MainURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// EffectiveONVIFPort returns ONVIFPort if > 0, or 80.
+func (c Camera) EffectiveONVIFPort() int {
+	if c.ONVIFPort > 0 && c.ONVIFPort <= 65535 {
+		return c.ONVIFPort
+	}
+	return 80
+}
+
+// PollONVIFEvents defaults to true.
+func (c Camera) PollONVIFEvents() bool { return c.ONVIFEvents == nil || *c.ONVIFEvents }
 
 // CameraRetention overrides global retention days for one camera.
 type CameraRetention struct {
@@ -132,6 +194,12 @@ type Server struct {
 	// APIKeysFile holds "name:sha256" lines (see `openvms-recorder apikey create`).
 	// Required when listen is not a loopback address.
 	APIKeysFile string `yaml:"api_keys_file"`
+	// CameraNetworks restricts ONVIF probe and RTSP test targets to these
+	// CIDR ranges (SSRF protection). Empty allows any reachable host.
+	CameraNetworks []string `yaml:"camera_networks"`
+	// TLSCert and TLSKey enable HTTPS when both are set.
+	TLSCert string `yaml:"tls_cert"`
+	TLSKey  string `yaml:"tls_key"`
 }
 
 // Data holds paths for state that must live outside the video volumes.
@@ -165,17 +233,18 @@ type Storage struct {
 // Volume is a recording root. Exactly one of the path fields must resolve on
 // the running OS: path_windows / path_linux win over the generic path.
 type Volume struct {
-	ID          string   `yaml:"id"`
-	Path        string   `yaml:"path"`
-	PathWindows string   `yaml:"path_windows"`
-	PathLinux   string   `yaml:"path_linux"`
-	Enabled     *bool    `yaml:"enabled"`
-	MaxPercent  float64  `yaml:"max_percent"`
-	QuotaGB     float64  `yaml:"quota_gb"`
-	MinFreeGB   *float64 `yaml:"min_free_gb"`
-	Priority    int      `yaml:"priority"`
-	Weight      int      `yaml:"weight"`
-	Cameras     []string `yaml:"cameras"`
+	ID            string   `yaml:"id"`
+	Path          string   `yaml:"path"`
+	PathWindows   string   `yaml:"path_windows"`
+	PathLinux     string   `yaml:"path_linux"`
+	Enabled       *bool    `yaml:"enabled"`
+	MaxPercent    float64  `yaml:"max_percent"`
+	QuotaGB       float64  `yaml:"quota_gb"`
+	FolderQuotaGB float64  `yaml:"folder_quota_gb"`
+	MinFreeGB     *float64 `yaml:"min_free_gb"`
+	Priority      int      `yaml:"priority"`
+	Weight        int      `yaml:"weight"`
+	Cameras       []string `yaml:"cameras"`
 }
 
 type Retention struct {
@@ -188,6 +257,7 @@ type Retention struct {
 type Recovery struct {
 	CameraSDBackfill string  `yaml:"camera_sd_backfill"`
 	MaxBandwidthMbps float64 `yaml:"max_bandwidth_mbps"`
+	AutoSyncSeconds  int     `yaml:"auto_sync_seconds"`
 }
 
 var volumeID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -217,7 +287,14 @@ func Default() Config {
 			MinDays:                 1,
 			PreserveProtectedEvents: true,
 		},
-		Recovery: Recovery{CameraSDBackfill: "when_supported", MaxBandwidthMbps: 20},
+		Recovery: Recovery{CameraSDBackfill: "when_supported", MaxBandwidthMbps: 20, AutoSyncSeconds: 300},
+		Events: EventsConfig{
+			TVTPollSeconds: 3,
+			Classifier:     ClassifierConfig{Mode: "none", MinConfidence: 0.5, TimeoutMS: 2500},
+		},
+		Core: CoreConfig{
+			SyncIntervalSeconds: 30,
+		},
 	}
 }
 
@@ -315,6 +392,15 @@ func (c Config) Validate() error {
 	var errs []string
 	add := func(format string, a ...any) { errs = append(errs, fmt.Sprintf(format, a...)) }
 
+	if (c.Server.TLSCert == "") != (c.Server.TLSKey == "") {
+		add("server: tls_cert and tls_key must both be set")
+	}
+	for _, cidr := range c.Server.CameraNetworks {
+		if _, err := netip.ParsePrefix(strings.TrimSpace(cidr)); err != nil {
+			add("server.camera_networks: invalid CIDR %q: %v", cidr, err)
+		}
+	}
+
 	if c.Recording.Mode != ModeContinuousWithEventMarkers {
 		add("recording.mode: %q not supported (only %q in this version)", c.Recording.Mode, ModeContinuousWithEventMarkers)
 	}
@@ -322,33 +408,7 @@ func (c Config) Validate() error {
 		add("recording.default_stream: must be main or sub")
 	}
 	s := c.Storage
-	pct := func(name string, v float64) {
-		if v <= 0 || v > 100 {
-			add("storage.%s: %.2f must be in (0, 100]", name, v)
-		}
-	}
-	pct("default_max_percent", s.DefaultMaxPercent)
-	pct("cleanup_start_percent", s.CleanupStartPercent)
-	pct("cleanup_target_percent", s.CleanupTargetPercent)
-	if s.CleanupTargetPercent >= s.CleanupStartPercent {
-		add("storage: cleanup_target_percent (%.2f) must be below cleanup_start_percent (%.2f)", s.CleanupTargetPercent, s.CleanupStartPercent)
-	}
-	if s.CleanupStartPercent >= s.DefaultMaxPercent {
-		add("storage: cleanup_start_percent (%.2f) must be below default_max_percent (%.2f)", s.CleanupStartPercent, s.DefaultMaxPercent)
-	}
-	if s.MinFreeGB < 0 {
-		add("storage.min_free_gb: must be >= 0")
-	}
-	switch s.Placement {
-	case PlacementBalanced, PlacementCameraAffinity, PlacementManual:
-	default:
-		add("storage.placement: %q must be balanced, camera_affinity or manual", s.Placement)
-	}
-	switch s.PressurePolicy {
-	case PressureOverwriteOldest, PressureProtectMinimum:
-	default:
-		add("storage.pressure_policy: %q must be %s or %s", s.PressurePolicy, PressureOverwriteOldest, PressureProtectMinimum)
-	}
+	errs = append(errs, ValidateStoragePolicy(s)...)
 	seen := map[string]bool{}
 	for i, v := range s.Volumes {
 		where := fmt.Sprintf("storage.volumes[%d]", i)
@@ -368,6 +428,9 @@ func (c Config) Validate() error {
 		}
 		if v.QuotaGB < 0 {
 			add("%s.quota_gb: must be >= 0", where)
+		}
+		if v.FolderQuotaGB < 0 {
+			add("%s.folder_quota_gb: must be >= 0", where)
 		}
 		if v.MinFreeGB != nil && *v.MinFreeGB < 0 {
 			add("%s.min_free_gb: must be >= 0", where)
@@ -399,6 +462,31 @@ func (c Config) Validate() error {
 	default:
 		add("recovery.camera_sd_backfill: %q not recognised", c.Recovery.CameraSDBackfill)
 	}
+	if c.Recovery.AutoSyncSeconds < 0 || c.Recovery.AutoSyncSeconds > 86400 {
+		add("recovery.auto_sync_seconds: %d must be in [0, 86400]", c.Recovery.AutoSyncSeconds)
+	}
+	if c.Events.MinConfidence < 0 || c.Events.MinConfidence > 1 {
+		add("events.min_confidence: %.2f must be in [0, 1]", c.Events.MinConfidence)
+	}
+	if c.Events.TVTPollSeconds < 0 || c.Events.TVTPollSeconds > 300 {
+		add("events.tvt_poll_seconds: %d must be in [0, 300]", c.Events.TVTPollSeconds)
+	}
+	switch c.Events.Classifier.Mode {
+	case "", "none":
+	case "http":
+		if u, err := url.Parse(strings.TrimSpace(c.Events.Classifier.Endpoint)); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			add("events.classifier.endpoint: valid http/https URL required when mode=http")
+		}
+	case "command":
+		if len(c.Events.Classifier.Command) == 0 || strings.TrimSpace(c.Events.Classifier.Command[0]) == "" {
+			add("events.classifier.command: non-empty command required when mode=command")
+		}
+	default:
+		add("events.classifier.mode: %q must be none, http or command", c.Events.Classifier.Mode)
+	}
+	if c.Events.Classifier.MinConfidence < 0 || c.Events.Classifier.MinConfidence > 1 {
+		add("events.classifier.min_confidence: %.2f must be in [0, 1]", c.Events.Classifier.MinConfidence)
+	}
 	if c.Recording.SegmentSeconds < 2 || c.Recording.SegmentSeconds > 600 {
 		add("recording.segment_seconds: %d must be in [2, 600]", c.Recording.SegmentSeconds)
 	}
@@ -415,6 +503,15 @@ func (c Config) Validate() error {
 			add("%s.%s", where, issue)
 		}
 	}
+	if c.Core.Enabled {
+		u, err := url.Parse(strings.TrimSpace(c.Core.CoreURL))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			add("core.core_url: valid http/https URL required when core.enabled=true")
+		}
+	}
+	if c.Core.SyncIntervalSeconds < 0 || c.Core.SyncIntervalSeconds > 3600 {
+		add("core.sync_interval_seconds: %d must be in [0, 3600]", c.Core.SyncIntervalSeconds)
+	}
 	if c.Data.Dir == "" {
 		add("data.dir: required")
 	}
@@ -422,4 +519,38 @@ func (c Config) Validate() error {
 		return fmt.Errorf("invalid configuration:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	return nil
+}
+
+// ValidateStoragePolicy validates global storage thresholds, reserve, placement and pressure policy.
+func ValidateStoragePolicy(s Storage) []string {
+	var errs []string
+	add := func(format string, a ...any) { errs = append(errs, fmt.Sprintf(format, a...)) }
+	pct := func(name string, v float64) {
+		if v <= 0 || v > 100 {
+			add("storage.%s: %.2f must be in (0, 100]", name, v)
+		}
+	}
+	pct("default_max_percent", s.DefaultMaxPercent)
+	pct("cleanup_start_percent", s.CleanupStartPercent)
+	pct("cleanup_target_percent", s.CleanupTargetPercent)
+	if s.CleanupTargetPercent >= s.CleanupStartPercent {
+		add("storage: cleanup_target_percent (%.2f) must be below cleanup_start_percent (%.2f)", s.CleanupTargetPercent, s.CleanupStartPercent)
+	}
+	if s.CleanupStartPercent >= s.DefaultMaxPercent {
+		add("storage: cleanup_start_percent (%.2f) must be below default_max_percent (%.2f)", s.CleanupStartPercent, s.DefaultMaxPercent)
+	}
+	if s.MinFreeGB < 0 {
+		add("storage.min_free_gb: must be >= 0")
+	}
+	switch s.Placement {
+	case PlacementBalanced, PlacementCameraAffinity, PlacementManual:
+	default:
+		add("storage.placement: %q must be balanced, camera_affinity or manual", s.Placement)
+	}
+	switch s.PressurePolicy {
+	case PressureOverwriteOldest, PressureProtectMinimum:
+	default:
+		add("storage.pressure_policy: %q must be %s or %s", s.PressurePolicy, PressureOverwriteOldest, PressureProtectMinimum)
+	}
+	return errs
 }

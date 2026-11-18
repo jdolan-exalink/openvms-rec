@@ -43,6 +43,7 @@ type Request struct {
 	Representation string    `json:"representation"`
 	From           time.Time `json:"from"`
 	To             time.Time `json:"to"`
+	Name           string    `json:"name,omitempty"`
 }
 
 // Export is the job as returned by the API.
@@ -131,6 +132,10 @@ func (s *Service) Create(ctx context.Context, req Request, idemKey string) (Expo
 	if req.Representation == "" {
 		req.Representation = "main"
 	}
+	req.Name = strings.TrimSpace(req.Name)
+	if len(req.Name) > 120 {
+		req.Name = req.Name[:120]
+	}
 	maxR := s.MaxRange
 	if maxR == 0 {
 		maxR = 24 * time.Hour
@@ -206,6 +211,104 @@ func (s *Service) Archive(ctx context.Context, id string) (string, Export, error
 	}
 	s.audit(ctx, "export.download", id, nil)
 	return filepath.Join(s.Dir, id, "export.zip"), e, nil
+}
+
+type zipSectionReadSeekCloser struct {
+	*io.SectionReader
+	f *os.File
+}
+
+func (z *zipSectionReadSeekCloser) Close() error { return z.f.Close() }
+
+// Video opens the stored video.mp4 inside a finished export archive so it can be
+// streamed with HTTP Range support or downloaded directly as MP4.
+func (s *Service) Video(ctx context.Context, id string) (io.ReadSeekCloser, Export, error) {
+	e, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, e, err
+	}
+	if e.State != StateSucceeded {
+		return nil, e, ErrNotReady
+	}
+	p := filepath.Join(s.Dir, id, "export.zip")
+	zr, err := zip.OpenReader(p)
+	if err != nil {
+		return nil, e, err
+	}
+	var offset int64
+	var size uint64
+	found := false
+	for _, zf := range zr.File {
+		if zf.Name == "video.mp4" {
+			if zf.Method != zip.Store {
+				zr.Close()
+				return nil, e, errors.New("video archive entry is compressed")
+			}
+			off, oerr := zf.DataOffset()
+			if oerr != nil {
+				zr.Close()
+				return nil, e, oerr
+			}
+			offset, size, found = off, zf.UncompressedSize64, true
+			break
+		}
+	}
+	zr.Close()
+	if !found {
+		return nil, e, ErrNotFound
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, e, err
+	}
+	return &zipSectionReadSeekCloser{
+		SectionReader: io.NewSectionReader(f, offset, int64(size)),
+		f:             f,
+	}, e, nil
+}
+
+// Delete cancels a running export (if needed) and removes the job and its files.
+func (s *Service) Delete(ctx context.Context, id string) error {
+	e, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	s.Cancel(id)
+	if _, err := s.DB.ExecContext(ctx, `DELETE FROM jobs WHERE id = ? AND kind = 'export'`, e.ID); err != nil {
+		return err
+	}
+	if s.Store != nil {
+		s.Store.ReleaseHolder(ctx, "export:"+e.ID)
+	}
+	if s.Dir != "" {
+		os.RemoveAll(filepath.Join(s.Dir, e.ID))
+	}
+	s.audit(ctx, "export.delete", e.ID, nil)
+	return nil
+}
+
+// ListExports returns recent export jobs with full payload metadata, newest first.
+func (s *Service) ListExports(ctx context.Context, limit int) ([]Export, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT payload FROM jobs WHERE kind = 'export' ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Export{}
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var e Export
+		if err := json.Unmarshal([]byte(payload), &e); err == nil {
+			out = append(out, e)
+		}
+	}
+	return out, rows.Err()
 }
 
 func (s *Service) save(e *Export) {

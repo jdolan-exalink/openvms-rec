@@ -16,6 +16,8 @@ func (s *Server) cameraAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/cameras/{id}", s.updateCamera)
 	mux.HandleFunc("DELETE /api/v1/cameras/{id}", s.deleteCamera)
 	mux.HandleFunc("POST /api/v1/cameras/test", s.testCamera)
+	mux.HandleFunc("POST /api/v1/cameras/{id}/recording/start", s.startCameraRecording)
+	mux.HandleFunc("POST /api/v1/cameras/{id}/recording/stop", s.stopCameraRecording)
 }
 
 // registry returns the camera registry; without one (tests, tools) only the
@@ -113,6 +115,33 @@ func (s *Server) deleteCamera(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) startCameraRecording(w http.ResponseWriter, r *http.Request) {
+	s.setCameraRecording(w, r, true)
+}
+
+func (s *Server) stopCameraRecording(w http.ResponseWriter, r *http.Request) {
+	s.setCameraRecording(w, r, false)
+}
+
+func (s *Server) setCameraRecording(w http.ResponseWriter, r *http.Request, enabled bool) {
+	id := r.PathValue("id")
+	reg := s.registry()
+	if reg == nil {
+		s.cameraError(w, cameras.ErrNotFound)
+		return
+	}
+	if err := reg.SetRecordingEnabled(r.Context(), id, enabled); err != nil {
+		s.cameraError(w, err)
+		return
+	}
+	status := "stopped"
+	if enabled {
+		status = "recording"
+	}
+	s.audit(r.Context(), "camera.recording."+status, id, map[string]any{"recording_enabled": enabled})
+	writeJSON(w, http.StatusAccepted, map[string]any{"status": status, "camera_id": id, "recording_enabled": enabled})
+}
+
 // TestRequest checks a stream before saving. With camera_id and no
 // username, the stored credentials of that camera are used.
 type TestRequest struct {
@@ -138,6 +167,10 @@ func (s *Server) testCamera(w http.ResponseWriter, r *http.Request) {
 	}
 	if u.User != nil {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_url", "put the username and password in their own fields, not in the url")
+		return
+	}
+	if err := checkCameraHost(r.Context(), s.Cfg.Server.CameraNetworks, u.Hostname()); err != nil {
+		writeError(w, http.StatusForbidden, "forbidden_network", err.Error())
 		return
 	}
 	user, pass := "", ""

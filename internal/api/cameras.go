@@ -14,20 +14,26 @@ import (
 
 // CameraDTO is the Camera schema. URLs never carry credentials.
 type CameraDTO struct {
-	ID             string                  `json:"id"`
-	Name           string                  `json:"name"`
-	Source         string                  `json:"source"`
-	Editable       bool                    `json:"editable"`
-	Enabled        bool                    `json:"enabled"`
-	MainURL        string                  `json:"main_url"`
-	SubURL         string                  `json:"sub_url"`
-	Transport      string                  `json:"rtsp_transport"`
-	Audio          string                  `json:"audio"`
-	Priority       int                     `json:"priority"`
-	DualRecording  bool                    `json:"dual_recording"`
-	Retention      *config.CameraRetention `json:"retention"`
-	HasCredentials bool                    `json:"has_credentials"`
-	Streams        []StreamStatus          `json:"streams"`
+	ID               string                  `json:"id"`
+	Name             string                  `json:"name"`
+	Source           string                  `json:"source"`
+	Editable         bool                    `json:"editable"`
+	Enabled          bool                    `json:"enabled"`
+	RecordingEnabled bool                    `json:"recording_enabled"`
+	MainURL          string                  `json:"main_url"`
+	SubURL           string                  `json:"sub_url"`
+	Transport        string                  `json:"rtsp_transport"`
+	Audio            string                  `json:"audio"`
+	Priority         int                     `json:"priority"`
+	DualRecording    bool                    `json:"dual_recording"`
+	Retention        *config.CameraRetention `json:"retention"`
+	HasCredentials   bool                    `json:"has_credentials"`
+	Host             string                  `json:"host,omitempty"`
+	ONVIFPort        int                     `json:"onvif_port"`
+	ONVIFEvents      bool                    `json:"onvif_events"`
+	Brand            string                  `json:"brand,omitempty"`
+	NVRMotion        bool                    `json:"nvr_motion"`
+	Streams          []StreamStatus          `json:"streams"`
 }
 
 func (s *Server) cameraDTO(e cameras.Entry, streams []StreamStatus) CameraDTO {
@@ -41,9 +47,11 @@ func (s *Server) cameraDTO(e cameras.Entry, streams []StreamStatus) CameraDTO {
 		a = "auto"
 	}
 	d := CameraDTO{ID: c.ID, Name: c.Name, Source: e.Source, Editable: e.Source == cameras.SourceAPI && s.Cameras != nil,
-		Enabled: c.IsEnabled(), MainURL: ingest.Redact(c.MainURL), Transport: t, Audio: a, Priority: c.Priority,
+		Enabled: c.IsEnabled(), RecordingEnabled: s.Cameras == nil || s.Cameras.IsRecordingEnabled(c.ID),
+		MainURL: ingest.Redact(c.MainURL), Transport: t, Audio: a, Priority: c.Priority,
 		DualRecording: c.DualRecording || s.Cfg.Recording.DualRecording, Retention: c.Retention,
-		HasCredentials: c.CredentialsRef != "", Streams: []StreamStatus{}}
+		HasCredentials: c.CredentialsRef != "", Host: c.EffectiveHost(), ONVIFPort: c.EffectiveONVIFPort(),
+		ONVIFEvents: c.PollONVIFEvents(), Brand: c.Brand, NVRMotion: c.NVRMotion, Streams: []StreamStatus{}}
 	if c.SubURL != "" {
 		d.SubURL = ingest.Redact(c.SubURL)
 	}

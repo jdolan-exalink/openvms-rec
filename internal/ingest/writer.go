@@ -53,6 +53,8 @@ type Sink struct {
 	// EstimateBytes is the expected size of the next segment, used to check
 	// headroom before writing. Updated from observed segment sizes.
 	EstimateBytes uint64
+	// OnGapClosed, when set, is called asynchronously after an open gap closes.
+	OnGapClosed func(cameraID, rep, reason string)
 
 	mu        sync.Mutex
 	gapID     int64  // open gap, 0 = none
@@ -99,14 +101,20 @@ func (s *Sink) OpenGap(t time.Time, reason string) {
 
 func (s *Sink) closeGap(t time.Time) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.gapID == 0 {
+		s.mu.Unlock()
 		return
 	}
-	if err := s.Index.CloseGap(context.Background(), s.gapID, t); err != nil {
+	gapID, reason, cb := s.gapID, s.gapReason, s.OnGapClosed
+	if err := s.Index.CloseGap(context.Background(), gapID, t); err != nil {
 		s.Log.Error("close gap", "camera", s.CameraID, "err", err)
 	}
 	s.gapID = 0
+	s.gapReason = ""
+	s.mu.Unlock()
+	if cb != nil {
+		cb(s.CameraID, s.Representation, reason)
+	}
 }
 
 // Open implements tsseg.Sink.

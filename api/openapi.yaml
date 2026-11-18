@@ -219,11 +219,25 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/StreamTest" } } }
         "422": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
+  /api/v1/cameras/discover:
+    post:
+      tags: [cameras]
+      operationId: discoverCameras
+      x-status: implemented
+      description: Broadcasts WS-Discovery UDP multicast on the local network and returns discovered ONVIF devices.
+      parameters:
+        - { name: timeout_ms, in: query, schema: { type: integer, minimum: 500, maximum: 10000, default: 2500 } }
+      responses:
+        "200":
+          description: Discovered ONVIF devices
+          content:
+            application/json:
+              schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/DiscoveredDevice" } } } }
   /api/v1/cameras/probe:
     post:
       tags: [cameras]
       operationId: probeCamera
-      x-status: planned
+      x-status: implemented
       description: |
         Runs real ONVIF / driver operations against a host without saving it
         and returns the capability matrix with evidence. Host must be inside
@@ -277,13 +291,78 @@ paths:
     get:
       tags: [cameras]
       operationId: getCameraCapabilities
-      x-status: planned
+      x-status: implemented
       responses:
         "200":
           description: Capability matrix
           content:
             application/json:
               schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Capability" } } } }
+  /api/v1/cameras/{id}/probe-tvt:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    post:
+      tags: [cameras]
+      operationId: probeCameraTVT
+      x-status: implemented
+      description: Queries read-only TVT / Provision-ISR HTTP XML endpoints (GetDeviceInfo, GetAlarmStatus, GetPerimeterConfig, GetTripwireConfig) and persists capability/polygon warnings.
+      responses:
+        "200": { description: TVT probe summary }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/cameras/{id}/sd-sync:
+    parameters:
+      - { $ref: "#/components/parameters/Id" }
+    get:
+      tags: [recordings]
+      operationId: getCameraSDSyncStatus
+      x-status: implemented
+      description: Returns the latest ONVIF Profile G microSD backfill status recorded for the camera.
+      responses:
+        "200": { description: Latest Profile G sync state }
+        "404": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [recordings]
+      operationId: syncCameraSDProfileG
+      x-status: implemented
+      parameters:
+        - { name: hours, in: query, schema: { type: integer, minimum: 1, maximum: 720, default: 24 } }
+      description: Runs bounded ONVIF Profile G microSD gap backfill without disturbing live ingest (only recovers verified edge recordings matching closed gaps).
+      responses:
+        "200": { description: Profile G backfill result }
+        "404": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /api/v1/cameras/{id}/webrtc:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    post:
+      tags: [cameras]
+      operationId: cameraWebRTC
+      x-status: implemented
+      description: |
+        Negotiates a low-latency WebRTC SDP Answer for a camera's live video feed
+        by tapping the active ingest MPEG-TS stream without opening an extra RTSP session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sdp]
+              properties:
+                sdp: { type: string }
+                stream: { type: string, enum: [main, sub] }
+      responses:
+        "200":
+          description: WebRTC SDP Answer
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sdp, stream]
+                properties:
+                  sdp: { type: string }
+                  stream: { type: string, enum: [main, sub] }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/cameras/{id}/snapshot:
     parameters: [{ $ref: "#/components/parameters/Id" }]
     get:
@@ -320,19 +399,211 @@ paths:
     get:
       tags: [recordings]
       operationId: listEvents
-      x-status: planned
+      x-status: implemented
+      parameters:
+        - { name: type, in: query, schema: { type: string } }
+        - { name: class, in: query, schema: { type: string } }
+        - { name: source, in: query, schema: { type: string } }
+        - { name: min_confidence, in: query, schema: { type: number, minimum: 0, maximum: 1 } }
       responses:
         "200":
           description: Events
           content:
             application/json:
               schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Event" } }, next_cursor: { type: string } } }
+    post:
+      tags: [recordings]
+      operationId: createCameraEvent
+      x-status: implemented
+      description: Registers an analytics or custom event for the camera via HTTP REST.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type: { type: string }
+                class: { type: string }
+                confidence: { type: number, minimum: 0, maximum: 1 }
+                bbox: { type: array, items: { type: number }, minItems: 4, maxItems: 4, description: "Normalized [x, y, w, h] detection bounding box in [0, 1]" }
+                zone: { type: string }
+                source: { type: string, default: http_rest }
+                timestamp_utc: { type: string, format: date-time }
+                dedupe_key: { type: string }
+                raw_ref: { type: string }
+      responses:
+        "201": { description: Created }
+        "200": { description: Deduplicated (already existed) }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/events:
+    parameters: [{ $ref: "#/components/parameters/From" }, { $ref: "#/components/parameters/To" }, { $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" }]
+    get:
+      tags: [recordings]
+      operationId: listAllEvents
+      x-status: implemented
+      parameters:
+        - { name: camera_id, in: query, schema: { type: string } }
+        - { name: type, in: query, schema: { type: string } }
+        - { name: class, in: query, schema: { type: string } }
+        - { name: source, in: query, schema: { type: string } }
+        - { name: min_confidence, in: query, schema: { type: number, minimum: 0, maximum: 1 } }
+      responses:
+        "200":
+          description: Events across all cameras
+          content:
+            application/json:
+              schema: { type: object, properties: { items: { type: array, items: { $ref: "#/components/schemas/Event" } }, next_cursor: { type: string } } }
+    post:
+      tags: [recordings]
+      operationId: createEvent
+      x-status: implemented
+      description: Registers an analytics or custom event via HTTP REST.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [camera_id, type]
+              properties:
+                camera_id: { type: string }
+                type: { type: string }
+                class: { type: string }
+                confidence: { type: number, minimum: 0, maximum: 1 }
+                bbox: { type: array, items: { type: number }, minItems: 4, maxItems: 4, description: "Normalized [x, y, w, h] detection bounding box in [0, 1]" }
+                zone: { type: string }
+                source: { type: string, default: http_rest }
+                timestamp_utc: { type: string, format: date-time }
+                dedupe_key: { type: string }
+                raw_ref: { type: string }
+      responses:
+        "201": { description: Created }
+        "200": { description: Deduplicated (already existed) }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/events/{id}/snapshot:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [recordings]
+      operationId: getEventSnapshot
+      x-status: implemented
+      description: Returns the JPEG snapshot captured for the detection event, if available. When the event includes a normalized bounding box (e.g. person or vehicle), the saved JPEG includes the detection box and label overlay.
+      responses:
+        "200":
+          description: JPEG image
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/events/provision:
+    post:
+      tags: [recordings]
+      operationId: ingestProvisionEvent
+      x-status: implemented
+      description: Receives HTTP push analytics/LPR events and keepalives from Provision-ISR cameras (source IP must match a registered camera).
+      responses:
+        "200": { description: Accepted }
+  /api/v1/auth/login:
+    post:
+      tags: [system]
+      operationId: loginUser
+      x-status: implemented
+      security: []
+      description: Authenticates a SQLite user (default admin/admin123 on first deploy) and returns a signed session bearer token (ovs_...).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        "200": { description: Authenticated }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/me:
+    get:
+      tags: [system]
+      operationId: currentAuthIdentity
+      x-status: implemented
+      responses:
+        "200": { description: Current user or API key identity }
+  /api/v1/auth/refresh:
+    post:
+      tags: [system]
+      operationId: refreshAuthSession
+      x-status: implemented
+      description: Issues a fresh 24h signed session bearer token (ovs_...) for an active authenticated session.
+      responses:
+        "200": { description: Refreshed session token }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/users:
+    get:
+      tags: [system]
+      operationId: listUsers
+      x-status: implemented
+      responses:
+        "200": { description: List of users (no password hashes returned) }
+    post:
+      tags: [system]
+      operationId: createUser
+      x-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+                role: { type: string, enum: [admin, operator, viewer], default: admin }
+      responses:
+        "201": { description: Created }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/users/{username}/password:
+    parameters: [{ name: username, in: path, required: true, schema: { type: string } }]
+    put:
+      tags: [system]
+      operationId: updateUserPassword
+      x-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        "200": { description: Updated }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/users/{username}:
+    parameters: [{ name: username, in: path, required: true, schema: { type: string } }]
+    delete:
+      tags: [system]
+      operationId: deleteUser
+      x-status: implemented
+      responses:
+        "200": { description: Deleted }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/cameras/{id}/recording/start:
     parameters: [{ $ref: "#/components/parameters/Id" }, { $ref: "#/components/parameters/IdempotencyKey" }]
     post:
       tags: [recordings]
       operationId: startRecording
-      x-status: planned
+      x-status: implemented
       responses:
         "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
   /api/v1/cameras/{id}/recording/stop:
@@ -340,7 +611,7 @@ paths:
     post:
       tags: [recordings]
       operationId: stopRecording
-      x-status: planned
+      x-status: implemented
       responses:
         "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
 
@@ -368,6 +639,10 @@ paths:
                 properties:
                   url: { type: string, examples: [/api/v1/playback/eyJ.../index.m3u8] }
                   expires_at: { type: string, format: date-time }
+                  compat: { type: boolean }
+                  segments: { type: integer }
+                  writing: { type: boolean }
+                  playlist_start: { type: string, format: date-time }
   /api/v1/playback/{token}/index.m3u8:
     parameters: [{ name: token, in: path, required: true, schema: { type: string } }]
     get:
@@ -395,6 +670,20 @@ paths:
         "503": { description: Volume holding the segment is unavailable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /api/v1/exports:
+    get:
+      tags: [exports]
+      operationId: listExports
+      x-status: implemented
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200":
+          description: Export jobs ordered newest first
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: "#/components/schemas/Export" } } } }
     post:
       tags: [exports]
       operationId: createExport
@@ -412,6 +701,7 @@ paths:
                 representation: { type: string, enum: [main, sub], default: main }
                 from: { type: string, format: date-time }
                 to: { type: string, format: date-time }
+                name: { type: string, maxLength: 120 }
       responses:
         "202": { description: Export job queued, content: { application/json: { schema: { $ref: "#/components/schemas/Export" } } } }
   /api/v1/exports/{id}:
@@ -422,6 +712,13 @@ paths:
       x-status: implemented
       responses:
         "200": { description: Export, content: { application/json: { schema: { $ref: "#/components/schemas/Export" } } } }
+    delete:
+      tags: [exports]
+      operationId: deleteExport
+      x-status: implemented
+      responses:
+        "204": { description: Export deleted }
+        "404": { $ref: "#/components/responses/Error" }
   /api/v1/exports/{id}/cancel:
     parameters: [{ $ref: "#/components/parameters/Id" }]
     post:
@@ -432,15 +729,36 @@ paths:
         "202": { description: Cancelling, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
         "409": { $ref: "#/components/responses/Error" }
   /api/v1/exports/{id}/download:
-    parameters: [{ $ref: "#/components/parameters/Id" }]
+    parameters:
+      - { $ref: "#/components/parameters/Id" }
+      - name: format
+        in: query
+        schema: { type: string, enum: [zip, mp4], default: zip }
     get:
       tags: [exports]
       operationId: downloadExport
       x-status: implemented
       responses:
         "200":
-          description: ZIP with video.mp4 (remuxed, not re-encoded) and manifest.json (SHA-256 of output and every verified source segment, actual cut times, gaps). Header X-Checksum-SHA256 is the archive hash.
-          content: { application/zip: { schema: { type: string, format: binary } } }
+          description: ZIP with video.mp4 (remuxed, not re-encoded) and manifest.json (or direct MP4 when format=mp4). Header X-Checksum-SHA256 is the archive hash for ZIP downloads.
+          content:
+            application/zip: { schema: { type: string, format: binary } }
+            video/mp4: { schema: { type: string, format: binary } }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/exports/{id}/video:
+    parameters:
+      - { $ref: "#/components/parameters/Id" }
+      - name: download
+        in: query
+        schema: { type: string, enum: ["0", "1"], default: "0" }
+    get:
+      tags: [exports]
+      operationId: streamExportVideo
+      x-status: implemented
+      responses:
+        "200":
+          description: Stored MP4 video stream with HTTP Range support for in-browser playback or direct download.
+          content: { video/mp4: { schema: { type: string, format: binary } } }
         "409": { $ref: "#/components/responses/Error" }
 
   /api/v1/storage:
@@ -450,6 +768,27 @@ paths:
       x-status: implemented
       responses:
         "200": { description: Summary, content: { application/json: { schema: { $ref: "#/components/schemas/StorageSummary" } } } }
+  /api/v1/storage/retention:
+    get:
+      tags: [storage]
+      operationId: getRetentionPolicy
+      x-status: implemented
+      responses:
+        "200": { description: 3-stage retention aging policy, content: { application/json: { schema: { type: object } } } }
+    put:
+      tags: [storage]
+      operationId: putRetentionPolicy
+      x-status: implemented
+      responses:
+        "200": { description: Updated 3-stage retention aging policy, content: { application/json: { schema: { type: object } } } }
+  /api/v1/storage/estimate:
+    get:
+      tags: [storage]
+      operationId: getStorageEstimate
+      x-status: implemented
+      description: Computes Avigilon-style global and per-camera estimated retention days from effective volume quotas, live/recorded bitrates, and the 3-stage aging schedule.
+      responses:
+        "200": { description: Retention estimate, content: { application/json: { schema: { type: object } } } }
   /api/v1/storage/volumes:
     get:
       tags: [storage]
@@ -522,7 +861,7 @@ paths:
     post:
       tags: [storage]
       operationId: drainVolume
-      x-status: planned
+      x-status: implemented
       description: Stop placing new segments on the volume; optionally queue a checksum-verified migration job.
       requestBody:
         content:
@@ -534,7 +873,7 @@ paths:
     get:
       tags: [storage]
       operationId: listStoragePolicies
-      x-status: planned
+      x-status: implemented
       responses:
         "200":
           description: Policies
@@ -546,7 +885,7 @@ paths:
     patch:
       tags: [storage]
       operationId: updateStoragePolicy
-      x-status: planned
+      x-status: implemented
       parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       requestBody:
         required: true
@@ -554,6 +893,44 @@ paths:
       responses:
         "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/StoragePolicy" } } } }
         "400": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logoutSession
+      x-status: implemented
+      responses:
+        "200": { description: Logged out, content: { application/json: { schema: { $ref: "#/components/schemas/Status" } } } }
+  /api/v1/core/status:
+    get:
+      tags: [core]
+      operationId: getCoreStatus
+      x-status: implemented
+      responses:
+        "200": { description: Core adapter status, content: { application/json: { schema: { $ref: "#/components/schemas/CoreStatus" } } } }
+  /api/v1/core/config:
+    put:
+      tags: [core]
+      operationId: updateCoreConfig
+      x-status: implemented
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CoreConfigPatch" } } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/CoreStatus" } } } }
+  /api/v1/core/sync:
+    post:
+      tags: [core]
+      operationId: syncCoreNow
+      x-status: implemented
+      responses:
+        "200": { description: Synced, content: { application/json: { schema: { $ref: "#/components/schemas/CoreStatus" } } } }
+  /api/v1/core/manifest:
+    get:
+      tags: [core]
+      operationId: getCoreManifest
+      x-status: implemented
+      responses:
+        "200": { description: Normalized federation snapshot for OpenVMS Core, content: { application/json: { schema: { type: object } } } }
 
   /api/v1/jobs:
     get:
@@ -635,6 +1012,7 @@ components:
         source: { type: string, enum: [config, api], description: "config: defined in recorder.yaml (read-only); api: managed through the API/UI" }
         editable: { type: boolean }
         enabled: { type: boolean }
+        recording_enabled: { type: boolean }
         main_url: { type: string, description: Without credentials. }
         sub_url: { type: string }
         rtsp_transport: { type: string, enum: [tcp, udp], default: tcp }
@@ -643,6 +1021,13 @@ components:
         priority: { type: integer, minimum: 0, maximum: 10 }
         retention: { $ref: "#/components/schemas/CameraRetention" }
         has_credentials: { type: boolean, description: Credentials are write-only and never returned. }
+        host: { type: string }
+        onvif_port: { type: integer, default: 80 }
+        onvif_events: { type: boolean, default: true }
+        brand: { type: string }
+        nvr_motion: { type: boolean, default: false }
+        brand: { type: string, description: "Event listener brand hint (e.g. provisionISR, generic)" }
+        nvr_motion: { type: boolean, default: false, description: Enable local NVR motion detection on the sub stream }
         streams: { type: array, items: { $ref: "#/components/schemas/StreamStatus" } }
     ProcUsage:
       type: object
@@ -681,6 +1066,11 @@ components:
         retention: { $ref: "#/components/schemas/CameraRetention" }
         username: { type: string, writeOnly: true }
         password: { type: string, writeOnly: true, format: password }
+        host: { type: string }
+        onvif_port: { type: integer, default: 80 }
+        onvif_events: { type: boolean, default: true }
+        brand: { type: string }
+        nvr_motion: { type: boolean, default: false }
     StreamTest:
       type: object
       properties:
@@ -711,12 +1101,23 @@ components:
       properties:
         items: { type: array, items: { $ref: "#/components/schemas/Camera" } }
         next_cursor: { type: string }
+    DiscoveredDevice:
+      type: object
+      properties:
+        endpoint_reference: { type: string }
+        host: { type: string }
+        onvif_port: { type: integer }
+        xaddrs: { type: array, items: { type: string } }
+        name: { type: string }
+        hardware: { type: string }
+        scopes: { type: array, items: { type: string } }
     ProbeRequest:
       type: object
       required: [host]
       properties:
         host: { type: string }
         onvif_port: { type: integer, default: 80 }
+        camera_id: { type: string }
         username: { type: string, writeOnly: true }
         password: { type: string, writeOnly: true, format: password }
         driver: { type: string }
@@ -728,6 +1129,8 @@ components:
         firmware: { type: string }
         serial: { type: string }
         clock_offset_ms: { type: integer }
+        main_url: { type: string }
+        sub_url: { type: string }
         capabilities: { type: array, items: { $ref: "#/components/schemas/Capability" } }
 
     Interval:
@@ -753,6 +1156,14 @@ components:
       properties:
         intervals: { type: array, items: { $ref: "#/components/schemas/Interval" } }
         gaps: { type: array, items: { $ref: "#/components/schemas/Gap" } }
+    Detection:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, examples: [person, vehicle, face, lpr, motion] }
+        class: { type: string, examples: [person, car, motorcycle, bicycle, truck, bus] }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        bbox: { type: array, items: { type: number }, minItems: 4, maxItems: 4 }
     Event:
       type: object
       required: [event_id, camera_id, timestamp_utc, type, source]
@@ -760,10 +1171,11 @@ components:
         event_id: { type: string }
         camera_id: { type: string }
         timestamp_utc: { type: string, format: date-time }
-        type: { type: string, examples: [motion, person, vehicle, line_crossing, intrusion, tamper] }
+        type: { type: string, examples: [motion, person, vehicle, line_crossing, intrusion, loitering, people_counting, tamper] }
         class: { type: string }
         confidence: { type: number, minimum: 0, maximum: 1 }
-        bbox: { type: array, items: { type: number }, minItems: 4, maxItems: 4 }
+        bbox: { type: array, items: { type: number }, minItems: 4, maxItems: 4, description: "Normalized [x, y, w, h] detection bounding box in [0, 1]" }
+        detections: { type: array, items: { $ref: "#/components/schemas/Detection" } }
         zone: { type: string }
         snapshot: { type: string }
         source: { type: string }
@@ -773,6 +1185,14 @@ components:
       required: [id, state]
       properties:
         id: { type: string }
+        request:
+          type: object
+          properties:
+            camera_id: { type: string }
+            representation: { type: string }
+            from: { type: string, format: date-time }
+            to: { type: string, format: date-time }
+            name: { type: string }
         camera_id: { type: string }
         from: { type: string, format: date-time }
         to: { type: string, format: date-time }
@@ -783,6 +1203,8 @@ components:
         progress: { type: number, minimum: 0, maximum: 1 }
         sha256: { type: string }
         error: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 
     Volume:
       type: object
@@ -839,22 +1261,28 @@ components:
         id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,62}$" }
         root_path: { type: string, description: Absolute path. }
         enabled: { type: boolean, default: true }
+        draining: { type: boolean, default: false }
         max_percent: { type: number, exclusiveMinimum: 0, maximum: 100 }
         quota_bytes: { type: integer, minimum: 0 }
+        folder_quota_bytes: { type: integer, minimum: 0 }
         min_free_bytes: { type: integer, minimum: 0 }
         priority: { type: integer }
         weight: { type: integer, minimum: 1 }
+        cameras: { type: array, items: { type: string } }
         initialize: { type: boolean, description: Create the folder if missing and write the volume marker. Refused on a non-empty folder. }
     VolumePatch:
       type: object
       properties:
         initialize: { type: boolean, description: Write the marker of an uninitialized volume. }
         enabled: { type: boolean }
+        draining: { type: boolean }
         max_percent: { type: number, exclusiveMinimum: 0, maximum: 100 }
         quota_bytes: { type: integer, minimum: 0 }
+        folder_quota_bytes: { type: integer, minimum: 0 }
         min_free_bytes: { type: integer, minimum: 0 }
         priority: { type: integer }
         weight: { type: integer, minimum: 1 }
+        cameras: { type: array, items: { type: string } }
     StorageSummary:
       type: object
       required: [volumes, writable_volumes, by_state, effective_limit_bytes, headroom_bytes, recorder_bytes, placement, pressure_policy, warnings, alerts]
@@ -897,3 +1325,34 @@ components:
         error: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    CoreConfigPatch:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        core_url: { type: string }
+        node_id: { type: string }
+        site_id: { type: string }
+        api_token: { type: string, writeOnly: true }
+        sync_interval_seconds: { type: integer, minimum: 5, maximum: 3600 }
+        push_events: { type: boolean }
+        push_health: { type: boolean }
+        tls_insecure_skip_verify: { type: boolean }
+    CoreStatus:
+      type: object
+      required: [enabled, status, node_id]
+      properties:
+        enabled: { type: boolean }
+        status: { type: string, enum: [disabled, connected, degraded, offline] }
+        core_url: { type: string }
+        node_id: { type: string }
+        site_id: { type: string }
+        has_token: { type: boolean }
+        sync_interval_seconds: { type: integer }
+        push_events: { type: boolean }
+        push_health: { type: boolean }
+        tls_insecure_skip_verify: { type: boolean }
+        last_sync_utc: { type: string, format: date-time }
+        events_synced: { type: integer }
+        last_event_id: { type: string }
+        pending_events: { type: integer }
+        last_error: { type: string }

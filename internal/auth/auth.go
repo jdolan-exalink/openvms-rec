@@ -98,21 +98,29 @@ func AppendKey(path string, k Key) error {
 type Authenticator struct {
 	Keys []Key
 	// Public reports paths that need no key (health, token-signed playback).
-	Public func(path string) bool
-	// MaxFailures per client IP within Window before 429. Defaults 10 / 1 min.
+	Public      func(path string) bool
+	VerifyToken func(token string) (string, bool)
+	// MaxFailures per client IP within Window before Middleware returns 429. Defaults 30 / 1 min.
 	MaxFailures int
-	Window      time.Duration
-	Now         func() time.Time
+	// LoginMaxFailures per client IP within Window before login returns 429. Defaults 10 / 1 min.
+	LoginMaxFailures int
+	Window           time.Duration
+	Now              func() time.Time
 
-	mu    sync.Mutex
-	fails map[string][]time.Time
+	initOnce   sync.Once
+	mu         sync.Mutex
+	fails      map[string][]time.Time
+	loginFails map[string][]time.Time
 }
 
-// Enabled reports whether any key is configured.
-func (a *Authenticator) Enabled() bool { return len(a.Keys) > 0 }
+// Enabled reports whether any key or token verifier is configured.
+func (a *Authenticator) Enabled() bool { return len(a.Keys) > 0 || a.VerifyToken != nil }
 
-// Check returns the key name for a valid token.
+// Check returns the key or user name for a valid token.
 func (a *Authenticator) Check(token string) (string, bool) {
+	if token == "" {
+		return "", false
+	}
 	h := sha256.Sum256([]byte(token))
 	name, ok := "", false
 	for _, k := range a.Keys { // compare all keys: constant time per key
@@ -120,7 +128,63 @@ func (a *Authenticator) Check(token string) (string, bool) {
 			name, ok = k.Name, true
 		}
 	}
+	if !ok && a.VerifyToken != nil {
+		return a.VerifyToken(token)
+	}
 	return name, ok
+}
+
+// TokenFromRequest extracts the bearer token or X-API-Key from r.
+func TokenFromRequest(r *http.Request) string { return tokenFrom(r) }
+
+// CheckRateLimit reports whether the caller's IP is currently rate-limited for login attempts.
+func (a *Authenticator) CheckRateLimit(r *http.Request) (bool, int) {
+	if a == nil {
+		return false, 0
+	}
+	a.initDefaults()
+	if a.isBlockedIn(&a.loginFails, clientIP(r), a.LoginMaxFailures) {
+		return true, int(a.Window.Seconds())
+	}
+	return false, 0
+}
+
+// RecordFailure records a failed login attempt for the caller's IP.
+func (a *Authenticator) RecordFailure(r *http.Request) {
+	if a == nil {
+		return
+	}
+	a.initDefaults()
+	a.recordFailIn(&a.loginFails, clientIP(r))
+}
+
+// ResetFailures clears failed API and login attempt counters for the caller's IP.
+func (a *Authenticator) ResetFailures(r *http.Request) {
+	if a == nil {
+		return
+	}
+	ip := clientIP(r)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.fails, ip)
+	delete(a.loginFails, ip)
+}
+
+func (a *Authenticator) initDefaults() {
+	a.initOnce.Do(func() {
+		if a.MaxFailures == 0 {
+			a.MaxFailures = 30
+		}
+		if a.LoginMaxFailures == 0 {
+			a.LoginMaxFailures = 10
+		}
+		if a.Window == 0 {
+			a.Window = time.Minute
+		}
+		if a.Now == nil {
+			a.Now = time.Now
+		}
+	})
 }
 
 func tokenFrom(r *http.Request) string {
@@ -133,30 +197,30 @@ func tokenFrom(r *http.Request) string {
 	return ""
 }
 
-// Middleware enforces keys when enabled.
+// Middleware enforces keys and session tokens when enabled.
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
-	if a.MaxFailures == 0 {
-		a.MaxFailures = 10
-	}
-	if a.Window == 0 {
-		a.Window = time.Minute
-	}
-	if a.Now == nil {
-		a.Now = time.Now
-	}
+	a.initDefaults()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !a.Enabled() || (a.Public != nil && a.Public(r.URL.Path)) {
 			next.ServeHTTP(w, r)
 			return
 		}
+		tok := tokenFrom(r)
+		if tok == "" {
+			// Requests without credentials are not credential-guessing attempts; keep
+			// them 401 so browser tabs and probes never trigger IP lockouts.
+			w.Header().Set("WWW-Authenticate", `Bearer realm="openvms-recorder"`)
+			httpError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API key")
+			return
+		}
 		ip := clientIP(r)
-		if a.blocked(ip) {
+		if a.isBlockedIn(&a.fails, ip, a.MaxFailures) {
 			w.Header().Set("Retry-After", fmt.Sprint(int(a.Window.Seconds())))
 			httpError(w, http.StatusTooManyRequests, "too_many_attempts", "too many failed authentication attempts")
 			return
 		}
-		if _, ok := a.Check(tokenFrom(r)); !ok {
-			a.fail(ip)
+		if _, ok := a.Check(tok); !ok {
+			a.recordFailIn(&a.fails, ip)
 			w.Header().Set("WWW-Authenticate", `Bearer realm="openvms-recorder"`)
 			httpError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API key")
 			return
@@ -165,34 +229,38 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-func (a *Authenticator) prune(ip string) []time.Time {
+func (a *Authenticator) pruneBucket(m map[string][]time.Time, ip string) []time.Time {
 	cut := a.Now().Add(-a.Window)
-	l := a.fails[ip]
+	l := m[ip]
 	i := 0
 	for i < len(l) && l[i].Before(cut) {
 		i++
 	}
 	l = l[i:]
-	a.fails[ip] = l
+	if len(l) == 0 {
+		delete(m, ip)
+		return nil
+	}
+	m[ip] = l
 	return l
 }
 
-func (a *Authenticator) blocked(ip string) bool {
+func (a *Authenticator) isBlockedIn(m *map[string][]time.Time, ip string, limit int) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.fails == nil {
+	if *m == nil {
 		return false
 	}
-	return len(a.prune(ip)) >= a.MaxFailures
+	return len(a.pruneBucket(*m, ip)) >= limit
 }
 
-func (a *Authenticator) fail(ip string) {
+func (a *Authenticator) recordFailIn(m *map[string][]time.Time, ip string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.fails == nil {
-		a.fails = map[string][]time.Time{}
+	if *m == nil {
+		*m = map[string][]time.Time{}
 	}
-	a.fails[ip] = append(a.prune(ip), a.Now())
+	(*m)[ip] = append(a.pruneBucket(*m, ip), a.Now())
 }
 
 func clientIP(r *http.Request) string {

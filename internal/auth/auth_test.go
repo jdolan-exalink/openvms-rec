@@ -79,6 +79,65 @@ func TestMiddleware(t *testing.T) {
 	}
 }
 
+func TestMissingTokenDoesNotRateLimit(t *testing.T) {
+	tok, k, _ := Generate("ui")
+	a := &Authenticator{Keys: []Key{k}, MaxFailures: 3, Window: time.Minute}
+	h := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
+	for i := 0; i < 20; i++ {
+		r := httptest.NewRequest("GET", "/api/v1/cameras", nil)
+		r.RemoteAddr = "10.0.0.15:1234"
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("missing token attempt %d: got %d want 401", i, w.Code)
+		}
+	}
+	r := httptest.NewRequest("GET", "/api/v1/cameras", nil)
+	r.RemoteAddr = "10.0.0.15:1234"
+	r.Header.Set("X-API-Key", tok)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("valid token after missing tokens: got %d want 204", w.Code)
+	}
+}
+
+func TestSeparateLoginLimitAndResetFailures(t *testing.T) {
+	tok, k, _ := Generate("ui")
+	a := &Authenticator{Keys: []Key{k}, MaxFailures: 2, LoginMaxFailures: 2, Window: time.Minute}
+	h := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
+	req := func(hdr string) *http.Request {
+		r := httptest.NewRequest("GET", "/api/v1/cameras", nil)
+		r.RemoteAddr = "10.0.0.21:4444"
+		if hdr != "" {
+			r.Header.Set("X-API-Key", hdr)
+		}
+		return r
+	}
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req("bad"))
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("bad key %d: got %d", i, w.Code)
+		}
+	}
+	// API middleware is locked out, while login rate limit stays independent.
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req(tok))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected API 429, got %d", w.Code)
+	}
+	if blocked, _ := a.CheckRateLimit(req("")); blocked {
+		t.Fatal("login rate limit should remain unblocked by middleware failures")
+	}
+	a.ResetFailures(req(""))
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req(tok))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected ResetFailures to clear middleware lockout, got %d", w.Code)
+	}
+}
+
 func TestIsLoopback(t *testing.T) {
 	for addr, want := range map[string]bool{"127.0.0.1:8640": true, "localhost:1": true, "[::1]:1": true, "0.0.0.0:8640": false, ":8640": false, "192.168.1.5:80": false} {
 		if IsLoopback(addr) != want {

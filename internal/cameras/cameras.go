@@ -48,6 +48,11 @@ type Input struct {
 	ID            string                  `json:"id"`
 	Name          string                  `json:"name"`
 	Enabled       *bool                   `json:"enabled"`
+	Host          string                  `json:"host"`
+	ONVIFPort     *int                    `json:"onvif_port"`
+	ONVIFEvents   *bool                   `json:"onvif_events"`
+	Brand         string                  `json:"brand"`
+	NVRMotion     bool                    `json:"nvr_motion"`
 	MainURL       string                  `json:"main_url"`
 	SubURL        string                  `json:"sub_url"`
 	Transport     string                  `json:"rtsp_transport"`
@@ -65,6 +70,7 @@ type Registry struct {
 	static        []config.Camera
 	staticSecrets config.Secrets
 	credsFile     string
+	secretsKey    []byte
 	globalDual    bool
 	now           func() time.Time
 
@@ -72,9 +78,10 @@ type Registry struct {
 	// the registry unlocked.
 	OnChange func(id string)
 
-	mu    sync.RWMutex
-	api   map[string]config.Camera
-	creds config.Secrets
+	mu             sync.RWMutex
+	api            map[string]config.Camera
+	creds          config.Secrets
+	recordingState map[string]bool
 }
 
 // Options configures Open.
@@ -82,23 +89,25 @@ type Options struct {
 	DB            *sql.DB // nil: only config cameras, mutations fail
 	Static        []config.Camera
 	StaticSecrets config.Secrets
-	CredsFile     string // credentials of API cameras (0600)
+	CredsFile     string // credentials of API cameras (0600, AES-256-GCM when SecretsKey is set)
+	SecretsKey    []byte
 	GlobalDual    bool
 }
 
 // Open loads API cameras from the database.
 func Open(ctx context.Context, o Options) (*Registry, error) {
 	r := &Registry{db: o.DB, static: o.Static, staticSecrets: o.StaticSecrets, credsFile: o.CredsFile,
-		globalDual: o.GlobalDual, now: time.Now, api: map[string]config.Camera{}}
+		secretsKey: append([]byte(nil), o.SecretsKey...), globalDual: o.GlobalDual, now: time.Now,
+		api: map[string]config.Camera{}, recordingState: map[string]bool{}}
 	if o.DB == nil {
 		return r, nil
 	}
-	creds, err := config.LoadSecrets(o.CredsFile)
+	creds, err := config.LoadSecretsAtRest(o.CredsFile, o.SecretsKey)
 	if err != nil {
 		return nil, err
 	}
 	r.creds = creds
-	rows, err := o.DB.QueryContext(ctx, `SELECT id, name, enabled, stream_main_url, stream_sub_url, credentials_ref,
+	rows, err := o.DB.QueryContext(ctx, `SELECT id, name, enabled, recording_enabled, host, onvif_port, onvif_events, brand, nvr_motion, stream_main_url, stream_sub_url, credentials_ref,
 		rtsp_transport, audio, dual_recording, priority, retention_main_days, retention_sub_days, retention_min_days FROM cameras`)
 	if err != nil {
 		return nil, err
@@ -106,13 +115,15 @@ func Open(ctx context.Context, o Options) (*Registry, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var c config.Camera
-		var enabled bool
+		var enabled, recEnabled, onvifEvents, nvrMotion bool
 		var main, sub, min sql.NullInt64
-		if err := rows.Scan(&c.ID, &c.Name, &enabled, &c.MainURL, &c.SubURL, &c.CredentialsRef, &c.Transport, &c.Audio,
+		if err := rows.Scan(&c.ID, &c.Name, &enabled, &recEnabled, &c.Host, &c.ONVIFPort, &onvifEvents, &c.Brand, &nvrMotion, &c.MainURL, &c.SubURL, &c.CredentialsRef, &c.Transport, &c.Audio,
 			&c.DualRecording, &c.Priority, &main, &sub, &min); err != nil {
 			return nil, err
 		}
 		c.Enabled = &enabled
+		c.ONVIFEvents = &onvifEvents
+		c.NVRMotion = nvrMotion
 		if main.Valid || sub.Valid || min.Valid {
 			c.Retention = &config.CameraRetention{MainDays: nullInt(main), SubDays: nullInt(sub), MinDays: nullInt(min)}
 		}
@@ -120,8 +131,23 @@ func Open(ctx context.Context, o Options) (*Registry, error) {
 			return nil, fmt.Errorf("camera %q is defined both in the configuration file and in the database; remove one", c.ID)
 		}
 		r.api[c.ID] = c
+		r.recordingState[c.ID] = recEnabled
 	}
-	return r, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Load any recording pause/resume overrides from camera_recording_state (covers static YAML cameras too).
+	if stRows, sErr := o.DB.QueryContext(ctx, `SELECT camera_id, recording_enabled FROM camera_recording_state`); sErr == nil {
+		defer stRows.Close()
+		for stRows.Next() {
+			var cid string
+			var rec bool
+			if stRows.Scan(&cid, &rec) == nil {
+				r.recordingState[cid] = rec
+			}
+		}
+	}
+	return r, nil
 }
 
 func nullInt(v sql.NullInt64) *int {
@@ -196,9 +222,17 @@ func (r *Registry) Credentials(id string) (config.Credentials, bool) {
 }
 
 func (r *Registry) build(id string, in Input) (config.Camera, error) {
-	c := config.Camera{ID: id, Name: strings.TrimSpace(in.Name), Enabled: in.Enabled, MainURL: strings.TrimSpace(in.MainURL),
+	c := config.Camera{ID: id, Name: strings.TrimSpace(in.Name), Enabled: in.Enabled, Host: strings.TrimSpace(in.Host),
+		ONVIFPort: 80, ONVIFEvents: in.ONVIFEvents, Brand: strings.TrimSpace(in.Brand), NVRMotion: in.NVRMotion, MainURL: strings.TrimSpace(in.MainURL),
 		SubURL: strings.TrimSpace(in.SubURL), Transport: in.Transport, Audio: in.Audio, Priority: 5,
 		DualRecording: in.DualRecording, Retention: in.Retention}
+	if in.ONVIFPort != nil && *in.ONVIFPort > 0 {
+		c.ONVIFPort = *in.ONVIFPort
+	}
+	if c.ONVIFEvents == nil {
+		t := true
+		c.ONVIFEvents = &t
+	}
 	if in.Priority != nil {
 		c.Priority = *in.Priority
 	}
@@ -271,15 +305,15 @@ func (r *Registry) save(ctx context.Context, c config.Camera, create bool) error
 	}
 	now := r.now().UnixMilli()
 	if create {
-		_, err := r.db.ExecContext(ctx, `INSERT INTO cameras (id, name, enabled, stream_main_url, stream_sub_url, credentials_ref,
+		_, err := r.db.ExecContext(ctx, `INSERT INTO cameras (id, name, enabled, host, onvif_port, onvif_events, brand, nvr_motion, stream_main_url, stream_sub_url, credentials_ref,
 			rtsp_transport, audio, dual_recording, priority, retention_main_days, retention_sub_days, retention_min_days, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			c.ID, c.Name, c.IsEnabled(), c.MainURL, c.SubURL, c.CredentialsRef, c.Transport, c.Audio, c.DualRecording, c.Priority, main, sub, min, now, now)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			c.ID, c.Name, c.IsEnabled(), c.EffectiveHost(), c.EffectiveONVIFPort(), c.PollONVIFEvents(), c.Brand, c.NVRMotion, c.MainURL, c.SubURL, c.CredentialsRef, c.Transport, c.Audio, c.DualRecording, c.Priority, main, sub, min, now, now)
 		return err
 	}
-	_, err := r.db.ExecContext(ctx, `UPDATE cameras SET name=?, enabled=?, stream_main_url=?, stream_sub_url=?, credentials_ref=?,
+	_, err := r.db.ExecContext(ctx, `UPDATE cameras SET name=?, enabled=?, host=?, onvif_port=?, onvif_events=?, brand=?, nvr_motion=?, stream_main_url=?, stream_sub_url=?, credentials_ref=?,
 		rtsp_transport=?, audio=?, dual_recording=?, priority=?, retention_main_days=?, retention_sub_days=?, retention_min_days=?, updated_at=?
-		WHERE id=?`, c.Name, c.IsEnabled(), c.MainURL, c.SubURL, c.CredentialsRef, c.Transport, c.Audio, c.DualRecording, c.Priority,
+		WHERE id=?`, c.Name, c.IsEnabled(), c.EffectiveHost(), c.EffectiveONVIFPort(), c.PollONVIFEvents(), c.Brand, c.NVRMotion, c.MainURL, c.SubURL, c.CredentialsRef, c.Transport, c.Audio, c.DualRecording, c.Priority,
 		main, sub, min, now, c.ID)
 	return err
 }
@@ -338,19 +372,68 @@ func (r *Registry) Update(ctx context.Context, id string, in Input) (Entry, erro
 // commit writes credentials then the row. Caller holds r.mu.
 func (r *Registry) commit(ctx context.Context, c config.Camera, creds config.Secrets, create bool) error {
 	if !sameCreds(r.creds, creds) {
-		if err := config.SaveSecrets(r.credsFile, creds); err != nil {
+		if err := config.SaveSecretsAtRest(r.credsFile, r.secretsKey, creds); err != nil {
 			return fmt.Errorf("save credentials: %w", err)
 		}
 	}
 	if err := r.save(ctx, c, create); err != nil {
 		// Keep the file consistent with the database.
 		if !sameCreds(r.creds, creds) {
-			config.SaveSecrets(r.credsFile, r.creds)
+			config.SaveSecretsAtRest(r.credsFile, r.secretsKey, r.creds)
 		}
 		return err
 	}
 	r.creds = creds
 	r.api[c.ID] = c
+	if create {
+		if r.recordingState == nil {
+			r.recordingState = map[string]bool{}
+		}
+		r.recordingState[c.ID] = true
+	}
+	return nil
+}
+
+// IsRecordingEnabled reports whether continuous recording ingest is active for id.
+func (r *Registry) IsRecordingEnabled(id string) bool {
+	if r == nil {
+		return true
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if v, ok := r.recordingState[id]; ok {
+		return v
+	}
+	return true
+}
+
+// SetRecordingEnabled persists per-camera recording start/stop state and triggers OnChange.
+func (r *Registry) SetRecordingEnabled(ctx context.Context, id string, enabled bool) error {
+	r.mu.Lock()
+	_, isAPI := r.api[id]
+	exists := isAPI || r.isStatic(id)
+	if !exists {
+		r.mu.Unlock()
+		return ErrNotFound
+	}
+	if r.db != nil {
+		now := r.now().UnixMilli()
+		if _, err := r.db.ExecContext(ctx, `INSERT INTO camera_recording_state(camera_id, recording_enabled, updated_at)
+			VALUES (?, ?, ?) ON CONFLICT(camera_id) DO UPDATE SET recording_enabled=excluded.recording_enabled, updated_at=excluded.updated_at`,
+			id, enabled, now); err != nil {
+			r.mu.Unlock()
+			return err
+		}
+		if isAPI {
+			_, _ = r.db.ExecContext(ctx, `UPDATE cameras SET recording_enabled = ?, updated_at = ? WHERE id = ?`, enabled, now, id)
+		}
+	}
+	if r.recordingState == nil {
+		r.recordingState = map[string]bool{}
+	}
+	r.recordingState[id] = enabled
+	r.mu.Unlock()
+	r.changed(id)
 	return nil
 }
 
@@ -390,9 +473,13 @@ func (r *Registry) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	delete(r.api, id)
+	delete(r.recordingState, id)
+	if r.db != nil {
+		_, _ = r.db.ExecContext(ctx, `DELETE FROM camera_recording_state WHERE camera_id = ?`, id)
+	}
 	if _, ok := r.creds.Cameras[id]; ok {
 		creds, _ := r.applyCreds(id, Input{Username: new(string)}, "")
-		if err := config.SaveSecrets(r.credsFile, creds); err == nil {
+		if err := config.SaveSecretsAtRest(r.credsFile, r.secretsKey, creds); err == nil {
 			r.creds = creds
 		}
 	}

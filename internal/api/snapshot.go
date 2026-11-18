@@ -1,13 +1,8 @@
 package api
 
 import (
-	"bytes"
-	"context"
 	"errors"
-	"io"
 	"net/http"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -23,7 +18,6 @@ import (
 // image is a few seconds old (one keyframe interval at most).
 const (
 	snapshotTTL   = 5 * time.Second
-	snapshotTail  = 8 << 20 // bytes read from the end of the segment
 	snapshotSlots = 2
 	snapshotWidth = 640
 )
@@ -130,7 +124,7 @@ func (s *Server) takeSnapshot(r *http.Request, c *snapshotCache, id, rep string)
 		if sg.Status == segments.StatusWriting {
 			path = ingest.TempPath(root, sg.ID) // still being written
 		}
-		img, err := s.lastKeyframe(ctx, path)
+		img, err := ingest.LastKeyframe(ctx, s.FFmpeg, path, snapshotWidth)
 		if err != nil {
 			lastErr = err
 			continue
@@ -142,61 +136,4 @@ func (s *Server) takeSnapshot(r *http.Request, c *snapshotCache, id, rep string)
 		return snapshot{at: at, taken: s.now(), jpeg: img}, nil
 	}
 	return snapshot{}, lastErr
-}
-
-// lastKeyframe decodes only keyframes of the file's tail and keeps the last
-// one, scaled down. Reading the tail keeps the cost flat however long the
-// segment is, and works on the segment still being written.
-func (s *Server) lastKeyframe(ctx context.Context, path string) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	size := st.Size()
-	off := int64(0)
-	if size > snapshotTail {
-		off = (size - snapshotTail) / 188 * 188
-	}
-	tail := io.NewSectionReader(f, off, size-off)
-
-	out, err := os.CreateTemp("", "ovr-snap-*.jpg")
-	if err != nil {
-		return nil, err
-	}
-	name := out.Name()
-	out.Close()
-	defer os.Remove(name)
-
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, s.FFmpeg, "-hide_banner", "-nostdin", "-loglevel", "error",
-		"-skip_frame", "nokey", "-f", "mpegts", "-i", "pipe:0",
-		"-map", "0:v:0", "-an", "-vf", "scale='min("+strconv.Itoa(snapshotWidth)+",iw)':-2",
-		"-q:v", "5", "-update", "1", "-y", name)
-	cmd.Stdin = tail
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, errors.New("ffmpeg: " + firstLine(stderr.String(), err))
-	}
-	img, err := os.ReadFile(name)
-	if err != nil || len(img) == 0 {
-		return nil, errors.New("no keyframe in the latest recording")
-	}
-	return img, nil
-}
-
-func firstLine(s string, err error) string {
-	if i := bytes.IndexByte([]byte(s), '\n'); i > 0 {
-		return s[:i]
-	}
-	if s != "" {
-		return s
-	}
-	return err.Error()
 }

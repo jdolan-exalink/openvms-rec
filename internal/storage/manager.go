@@ -28,10 +28,11 @@ type Manager struct {
 	// Policy returns retention policy per camera/representation.
 	Policy retention.PolicyFunc
 
-	goos  string
-	db    *sql.DB         // set by LoadVolumes; nil = configuration only
-	specs []volumes.Spec  // config volumes followed by API volumes
-	extra []config.Volume // API volumes (SQLite), editable at runtime
+	goos             string
+	db               *sql.DB         // set by LoadVolumes; nil = configuration only
+	specs            []volumes.Spec  // config volumes followed by API volumes
+	extra            []config.Volume // API volumes (SQLite), editable at runtime
+	runtimeOverrides map[string]VolumeRuntime
 	// chg serializes volume mutations so validation and persistence see a
 	// consistent list.
 	chg sync.Mutex
@@ -96,10 +97,19 @@ func (m *Manager) Refresh(ctx context.Context) []volumes.Status {
 	defer m.mu.Unlock()
 	for i := range sts {
 		st := &sts[i]
-		if st.State != volumes.StateHealthy && st.State != volumes.StateFull {
+		if st.State != volumes.StateHealthy && st.State != volumes.StateFull && st.State != volumes.StateDraining {
 			continue
 		}
-		if r := health.Probe(st.Spec.Root); !r.OK {
+		r := health.Probe(st.Spec.Root)
+		probeInfo := &volumes.ProbeInfo{
+			OK:        r.OK,
+			LatencyMS: float64(r.Latency.Microseconds()) / 1000.0,
+		}
+		if r.Err != nil {
+			probeInfo.Error = r.Err.Error()
+		}
+		st.Probe = probeInfo
+		if !r.OK {
 			st.State, st.Reason = volumes.StateDegraded, "write probe failed: "+r.Err.Error()
 		} else if reason, bad := m.failed[st.Spec.ID]; bad {
 			// Probe recovered: clear the ingest failure but log it.
@@ -150,9 +160,10 @@ func (m *Manager) Choose(cameraID string, sizeBytes uint64) (placement.Decision,
 	for _, st := range m.statuses {
 		roots[st.Spec.ID] = st.Spec.Root
 	}
+	placer := m.Placer
 	m.mu.RUnlock()
 
-	d, err := m.Placer.Choose(cameraID, sizeBytes, cands)
+	d, err := placer.Choose(cameraID, sizeBytes, cands)
 	if err != nil {
 		return d, "", err
 	}
@@ -188,6 +199,9 @@ func (m *Manager) MarkFailed(volumeID string, err error) {
 func (m *Manager) RunRetention(ctx context.Context) {
 	now := m.Now()
 	var alerts []retention.Alert
+	m.mu.RLock()
+	pressure := m.Cfg.Storage.PressurePolicy
+	m.mu.RUnlock()
 	for _, st := range m.Statuses() {
 		switch st.State {
 		case volumes.StateMissing, volumes.StateUnready:
@@ -203,7 +217,7 @@ func (m *Manager) RunRetention(ctx context.Context) {
 		}
 		plan := retention.PlanVolume(retention.Input{
 			Now: now, Limits: st.Limits, RecorderBytes: st.Usage.RecorderBytes, Segments: cands,
-			Policy: m.Policy, PressurePolicy: m.Cfg.Storage.PressurePolicy,
+			Policy: m.Policy, PressurePolicy: pressure,
 		})
 		for _, a := range plan.Alerts {
 			m.Log.Warn("retention alert", "volume", st.Spec.ID, "code", a.Code, "camera", a.CameraID, "msg", a.Message)

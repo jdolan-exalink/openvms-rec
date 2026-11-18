@@ -193,3 +193,39 @@ func TestExportValidation(t *testing.T) {
 		t.Fatal("huge range accepted")
 	}
 }
+
+func TestExportListVideoAndDelete(t *testing.T) {
+	svc, _, _ := setup(t)
+	ctx := context.Background()
+	req := Request{CameraID: "cam1", Name: "Portón entrada", From: t0.Add(2 * time.Second), To: t0.Add(8 * time.Second)}
+	e, err := svc.Create(ctx, req, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e = wait(t, svc, e.ID)
+	if e.State != StateSucceeded {
+		t.Fatalf("%+v", e)
+	}
+	list, err := svc.ListExports(ctx, 20)
+	if err != nil || len(list) != 1 || list[0].ID != e.ID || list[0].Request.Name != "Portón entrada" {
+		t.Fatalf("ListExports got %+v err=%v", list, err)
+	}
+	rsc, gotExp, err := svc.Video(ctx, e.ID)
+	if err != nil {
+		t.Fatalf("Video: %v", err)
+	}
+	data, err := io.ReadAll(rsc)
+	rsc.Close()
+	if err != nil || len(data) == 0 || gotExp.ID != e.ID {
+		t.Fatalf("Video read len=%d err=%v", len(data), err)
+	}
+	if err := svc.Delete(ctx, e.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := svc.Get(ctx, e.ID); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound after delete, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(svc.Dir, e.ID)); !os.IsNotExist(err) {
+		t.Fatalf("expected export dir removed")
+	}
+}

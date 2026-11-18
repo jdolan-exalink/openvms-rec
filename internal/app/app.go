@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -20,9 +21,12 @@ import (
 	"github.com/jdolan-exalink/openvms-rec/internal/auth"
 	"github.com/jdolan-exalink/openvms-rec/internal/cameras"
 	"github.com/jdolan-exalink/openvms-rec/internal/config"
+	"github.com/jdolan-exalink/openvms-rec/internal/core"
 	"github.com/jdolan-exalink/openvms-rec/internal/db"
+	"github.com/jdolan-exalink/openvms-rec/internal/events"
 	"github.com/jdolan-exalink/openvms-rec/internal/exports"
 	"github.com/jdolan-exalink/openvms-rec/internal/ingest"
+	"github.com/jdolan-exalink/openvms-rec/internal/live"
 	"github.com/jdolan-exalink/openvms-rec/internal/playback"
 	"github.com/jdolan-exalink/openvms-rec/internal/segments"
 	"github.com/jdolan-exalink/openvms-rec/internal/storage"
@@ -33,22 +37,34 @@ import (
 
 // App is the running recorder.
 type App struct {
-	Cfg     config.Config
-	DB      *sql.DB
-	Store   *segments.Store
-	Storage *storage.Manager
-	Cameras *cameras.Registry
+	Cfg          config.Config
+	DB           *sql.DB
+	Store        *segments.Store
+	Storage      *storage.Manager
+	Cameras      *cameras.Registry
+	Events       *events.Store
+	Puller       *events.ONVIFPuller
+	TVTPoller    *events.TVTPoller
+	Motion       *events.MotionDetector
+	EventMgr     *events.Manager
+	Provision    *events.ProvisionHandler
+	ProfileGSync *events.ProfileGSyncService
+	Core         *core.Adapter
 	// Recorders are the running streams, key camera/representation. Guarded
 	// by mu once Run has started.
 	Recorders map[string]*ingest.Recorder
 	Exports   *exports.Service
 	Signer    *playback.Signer
+	LiveHub   *live.Hub
+	WebRTC    *live.Service
 	Log       *slog.Logger
 	Version   string
 
 	// StorageInterval is how often volumes are inspected and retention runs.
 	StorageInterval time.Duration
 	Auth            *auth.Authenticator
+	Users           *auth.UserStore
+	Tokens          *auth.TokenSigner
 	// Sampler measures resources; Logs holds recent warnings (set by the
 	// caller when it wraps the logger with Logs.Handler).
 	Sampler *sysinfo.Sampler
@@ -86,19 +102,53 @@ func New(ctx context.Context, cfg config.Config, prober volumes.Prober, log *slo
 	}
 	a := &App{Cfg: cfg, DB: d, Store: store, Storage: mgr, Recorders: map[string]*ingest.Recorder{},
 		Log: log, Version: version, StorageInterval: 30 * time.Second, running: map[string]*runningStream{}, Sampler: sysinfo.NewSampler()}
+	a.LiveHub = live.NewHub()
+	a.WebRTC = &live.Service{Hub: a.LiveHub, FFmpeg: cfg.Recording.FFmpegPath, Log: log}
+
+	users := auth.NewUserStore(d)
+	if created, err := users.EnsureDefaultAdmin(ctx); err != nil {
+		d.Close()
+		return nil, err
+	} else if created {
+		log.Info("seeded default admin user", "username", auth.DefaultAdminUser)
+	}
+	secret, err := auth.LoadOrCreateSecret(cfg.Data.Dir)
+	if err != nil {
+		d.Close()
+		return nil, err
+	}
+	tokens, err := auth.NewTokenSigner(secret)
+	if err != nil {
+		d.Close()
+		return nil, err
+	}
+	a.Users = users
+	a.Tokens = tokens
 
 	keys, err := auth.LoadKeys(cfg.Server.APIKeysFile)
 	if err != nil {
 		d.Close()
 		return nil, err
 	}
-	if len(keys) == 0 && !auth.IsLoopback(cfg.Server.Listen) {
-		d.Close()
-		return nil, fmt.Errorf("refusing to listen on %s without API keys: create one with `openvms-recorder apikey create NAME` and set server.api_keys_file", cfg.Server.Listen)
+	a.Auth = &auth.Authenticator{
+		Keys: keys,
+		VerifyToken: func(tok string) (string, bool) {
+			sess, ok := tokens.Verify(tok)
+			if !ok {
+				return "", false
+			}
+			if auth.IsTokenRevoked(context.Background(), d, tok) {
+				return "", false
+			}
+			return sess.Username, true
+		},
+		Public: func(p string) bool {
+			return p == "/" || p == "/hls.min.js" || p == "/favicon.ico" || p == "/api/v1/auth/login" ||
+				strings.HasPrefix(p, "/health/") || strings.HasPrefix(p, "/api/v1/playback/") ||
+				p == "/SendKeepalive" || p == "/SendAlarmData" || p == "/SendSmartData" || p == "/SendDeviceInfo" ||
+				p == "/Keepalive" || p == "/v1/provision-lpr/event" || p == "/v1/provision-lpr/keepalive" || p == "/api/v1/events/provision"
+		},
 	}
-	a.Auth = &auth.Authenticator{Keys: keys, Public: func(p string) bool {
-		return p == "/" || p == "/hls.min.js" || strings.HasPrefix(p, "/health/") || strings.HasPrefix(p, "/api/v1/playback/")
-	}}
 	a.Signer, err = playback.NewSigner()
 	if err != nil {
 		d.Close()
@@ -112,13 +162,48 @@ func New(ctx context.Context, cfg config.Config, prober volumes.Prober, log *slo
 		d.Close()
 		return nil, err
 	}
+	secKey := config.DeriveSecretsKey(secret)
 	a.Cameras, err = cameras.Open(ctx, cameras.Options{DB: d, Static: cfg.Cameras, StaticSecrets: secrets,
-		CredsFile: filepath.Join(cfg.Data.Dir, CredentialsFile), GlobalDual: cfg.Recording.DualRecording})
+		CredsFile: filepath.Join(cfg.Data.Dir, CredentialsFile), SecretsKey: secKey, GlobalDual: cfg.Recording.DualRecording})
 	if err != nil {
 		d.Close()
 		return nil, err
 	}
+	a.Core, err = core.New(ctx, d, secKey, cfg.Core, version, log)
+	if err != nil {
+		d.Close()
+		return nil, fmt.Errorf("core adapter: %w", err)
+	}
+	a.Core.BuildManifest = a.coreManifestSnapshot
 	a.Cameras.OnChange = a.applyCamera
+	a.Events = events.NewStore(d)
+	a.Events.MinConfidence = cfg.Events.MinConfidence
+	evSnap := &events.Snapshotter{
+		DB:         d,
+		Dir:        filepath.Join(cfg.Data.Dir, "snapshots"),
+		FFmpeg:     cfg.Recording.FFmpegPath,
+		VolumeRoot: a.volumeRoot,
+		Log:        log,
+	}
+	a.Events.OnInsert = evSnap.CaptureAsync
+	a.Puller = events.NewONVIFPuller(a.Events, a.Cameras, a.Log)
+	a.TVTPoller = events.NewTVTPoller(a.Events, a.Cameras, time.Duration(cfg.Events.TVTPollSeconds)*time.Second, a.Log)
+	a.Motion = events.NewMotionDetector(a.Events, a.Cameras, cfg.Recording.FFmpegPath, a.Log)
+	a.Motion.Hub = a.LiveHub
+	a.Motion.Classifier = events.NewObjectClassifier(cfg.Events.Classifier, nil)
+	a.Motion.FrameFetcher = evSnap.LatestFrameJPEG
+	a.EventMgr = events.NewManager(a.Puller, a.TVTPoller, a.Motion)
+	a.Provision = events.NewProvisionHandler(a.Events, a.Cameras, a.Log)
+	a.ProfileGSync = &events.ProfileGSyncService{
+		DB:       d,
+		Events:   a.Events,
+		Segments: store,
+		Cameras:  a.Cameras,
+		Storage:  mgr,
+		Cfg:      cfg.Recovery,
+		FFmpeg:   cfg.Recording.FFmpegPath,
+		Log:      log,
+	}
 	mgr.Policy = CameraPolicy(cfg, a.Cameras.Get)
 	for _, e := range a.Cameras.List() {
 		recs, err := a.buildRecorders(e)
@@ -135,11 +220,11 @@ func New(ctx context.Context, cfg config.Config, prober volumes.Prober, log *slo
 // the data directory (mode 0600).
 const CredentialsFile = "camera-credentials.yaml"
 
-// buildRecorders returns the recorders a camera needs (none if disabled).
+// buildRecorders returns the recorders a camera needs (none if disabled or recording paused).
 func (a *App) buildRecorders(e cameras.Entry) (map[string]*ingest.Recorder, error) {
 	out := map[string]*ingest.Recorder{}
 	cam := e.Camera
-	if !cam.IsEnabled() {
+	if !cam.IsEnabled() || (a.Cameras != nil && !a.Cameras.IsRecordingEnabled(cam.ID)) {
 		return out, nil
 	}
 	cfg := a.Cfg
@@ -156,11 +241,23 @@ func (a *App) buildRecorders(e cameras.Entry) (map[string]*ingest.Recorder, erro
 			return nil, err
 		}
 		sink := &ingest.Sink{CameraID: cam.ID, Representation: st.rep, Volumes: a.Storage, Index: a.Store, Log: a.Log}
+		if a.ProfileGSync != nil && st.rep == "main" {
+			sink.OnGapClosed = func(camID, _, reason string) {
+				if reason != "" && reason != "connecting" {
+					a.ProfileGSync.NotifyCamera(camID)
+				}
+			}
+		}
+		var liveTap io.Writer
+		if a.LiveHub != nil {
+			liveTap = a.LiveHub.Tap(cam.ID, st.rep)
+		}
 		out[cam.ID+"/"+st.rep] = &ingest.Recorder{
 			Source:  ingest.Source{URL: u, Transport: cam.Transport, Audio: cam.Audio},
 			FFmpeg:  cfg.Recording.FFmpegPath,
 			Segment: time.Duration(cfg.Recording.SegmentSeconds) * time.Second,
 			Sink:    sink,
+			LiveTap: liveTap,
 			Log:     a.Log,
 		}
 	}
@@ -220,6 +317,11 @@ func (a *App) applyCamera(id string) {
 		}
 	}
 	a.Log.Info("camera applied", "camera", id, "streams", len(recs))
+	if a.EventMgr != nil {
+		a.EventMgr.RestartCamera(id)
+	} else if a.Puller != nil {
+		a.Puller.RestartCamera(id)
+	}
 }
 
 // CameraPolicy applies per-camera retention overrides on top of globals.
@@ -307,6 +409,22 @@ func (a *App) Run(ctx context.Context) error {
 
 	a.wg.Add(1)
 	go func() { defer a.wg.Done(); a.Storage.Run(ctx, a.StorageInterval) }()
+	if a.EventMgr != nil {
+		a.wg.Add(1)
+		go func() { defer a.wg.Done(); a.EventMgr.Start(ctx) }()
+	} else if a.Puller != nil {
+		a.wg.Add(1)
+		go func() { defer a.wg.Done(); a.Puller.Start(ctx) }()
+	}
+	if a.ProfileGSync != nil && a.Cfg.Recovery.AutoSyncSeconds > 0 && !strings.EqualFold(a.Cfg.Recovery.CameraSDBackfill, "disabled") {
+		interval := time.Duration(a.Cfg.Recovery.AutoSyncSeconds) * time.Second
+		a.wg.Add(1)
+		go func() { defer a.wg.Done(); a.ProfileGSync.StartLoop(ctx, interval) }()
+	}
+	if a.Core != nil {
+		a.wg.Add(1)
+		go func() { defer a.wg.Done(); a.Core.Start(ctx) }()
+	}
 	a.mu.Lock()
 	a.runCtx = ctx
 	for key, r := range a.Recorders {
@@ -321,7 +439,13 @@ func (a *App) Run(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errc := make(chan error, 1)
-	go func() { errc <- srv.ListenAndServe() }()
+	go func() {
+		if a.Cfg.Server.TLSCert != "" && a.Cfg.Server.TLSKey != "" {
+			errc <- srv.ListenAndServeTLS(a.Cfg.Server.TLSCert, a.Cfg.Server.TLSKey)
+		} else {
+			errc <- srv.ListenAndServe()
+		}
+	}()
 	a.Log.Info("recorder started", "listen", a.Cfg.Server.Listen, "version", a.Version,
 		"volumes", len(a.Storage.Specs()), "streams", nstreams)
 
@@ -333,17 +457,31 @@ func (a *App) Run(ctx context.Context) error {
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	srv.Shutdown(shutdown)
+	if a.WebRTC != nil {
+		_ = a.WebRTC.Close()
+	}
 	a.wg.Wait() // recorders close their open segments cleanly
 	a.Storage.PersistAffinity(context.Background())
 	a.Log.Info("recorder stopped")
 	return err
 }
 
+func (a *App) apiServer() *api.Server {
+	return &api.Server{Cfg: a.Cfg, DB: a.DB, Prober: a.Storage.Prober, Version: a.Version, Log: a.Log,
+		Storage: a.Storage, Streams: a.streams, Exports: a.Exports, Signer: a.Signer,
+		Cameras: a.Cameras, Events: a.Events, SnapshotsDir: filepath.Join(a.Cfg.Data.Dir, "snapshots"),
+		Provision: a.Provision, ProfileGSync: a.ProfileGSync, WebRTC: a.WebRTC, Core: a.Core,
+		Users: a.Users, Tokens: a.Tokens, Auth: a.Auth,
+		FFmpeg: a.Cfg.Recording.FFmpegPath, Sampler: a.Sampler, Logs: a.Logs}
+}
+
+func (a *App) coreManifestSnapshot(ctx context.Context) core.Manifest {
+	return a.apiServer().CoreManifestSnapshot(ctx)
+}
+
 // Handler returns the API router.
 func (a *App) Handler() http.Handler {
-	h := (&api.Server{Cfg: a.Cfg, DB: a.DB, Prober: a.Storage.Prober, Version: a.Version, Log: a.Log,
-		Storage: a.Storage, Streams: a.streams, Exports: a.Exports, Signer: a.Signer,
-		Cameras: a.Cameras, FFmpeg: a.Cfg.Recording.FFmpegPath, Sampler: a.Sampler, Logs: a.Logs}).Handler()
+	h := a.apiServer().Handler()
 	return api.SecurityHeaders(a.Auth.Middleware(h))
 }
 
@@ -372,4 +510,9 @@ func (a *App) streams() []api.StreamStatus {
 }
 
 // Close releases resources.
-func (a *App) Close() error { return a.DB.Close() }
+func (a *App) Close() error {
+	if a.WebRTC != nil {
+		_ = a.WebRTC.Close()
+	}
+	return a.DB.Close()
+}
